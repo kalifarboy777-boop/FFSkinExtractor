@@ -7,6 +7,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Rig\Female.json" LogicalName="FFSkinExtractor.Rig.Female.json" />
+    <EmbeddedResource Include="Rig\Male.json" LogicalName="FFSkinExtractor.Rig.Male.json" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="AssetRipper.TextureDecoder" Version="2.6.3" />
     <PackageReference Include="AssetsTools.NET" Version="3.0.5" />
     <PackageReference Include="SharpGLTF.Toolkit" Version="1.0.7" />

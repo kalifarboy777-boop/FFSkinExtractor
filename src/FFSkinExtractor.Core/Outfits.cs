@@ -4,9 +4,27 @@ using FFSkinExtractor.Core.Uma;
 
 namespace FFSkinExtractor.Core;
 
-/// <summary>Une pièce de tenue : un sous-maillage et la texture à lui appliquer.</summary>
+/// <summary>Une pièce de tenue : un sous-maillage et les textures à lui appliquer.</summary>
 /// <param name="IsSkin">Morceau de peau (cou, mains…) qui prend la texture du corps de base.</param>
-public sealed record OutfitPart(string SlotName, UmaMesh Mesh, int SubmeshIndex, DecodedTexture? Texture, bool IsSkin);
+/// <param name="Piece">Type de pièce : Top, Bottom, Shoe, Hair, Head, Accessory, Hands, Other.</param>
+public sealed record OutfitPart(string SlotName, UmaMesh Mesh, int SubmeshIndex, TextureSet Textures, bool IsSkin,
+    MaterialKind Material = MaterialKind.Opaque, string Piece = "")
+{
+    public DecodedTexture? Texture => Textures.BaseColor;
+}
+
+/// <summary>Options de lecture des tenues d'un bundle.</summary>
+public sealed record OutfitReadOptions
+{
+    /// <summary>Variantes « _N » (lobby, plus détaillées) plutôt que les variantes en jeu.</summary>
+    public bool HighDetail { get; init; }
+    /// <summary>Utilise les overlays « _PBR » (couleur, normales, métal) quand la pièce en a.</summary>
+    public bool PreferPbr { get; init; } = true;
+    /// <summary>Textures de peau du corps de base, si l'APK du jeu est fourni.</summary>
+    public SkinTextures? Skin { get; init; }
+    /// <summary>Textures rangées dans un autre bundle : (nom CAB, pathId) → texture.</summary>
+    public Func<string, long, DecodedTexture?>? External { get; init; }
+}
 
 public sealed record Outfit(string Name, string Gender, List<OutfitPart> Parts);
 
@@ -26,24 +44,25 @@ public static partial class OutfitReader
     static readonly HashSet<string> NoiseWords = new(StringComparer.OrdinalIgnoreCase)
         { "slot", "overlay", "lobby", "ingame", "cutoff", "mesh" };
 
-    record Slot(string SlotName, long MeshPathId, int SubmeshIndex);
+    record Slot(string SlotName, long MaterialPathId, long MeshPathId, int SubmeshIndex);
 
-    /// <summary>Nom normalisé : mots significatifs, index éventuel (« top_2 » → 2) et marqueur « _N ».</summary>
-    record Key(string Words, int? Index, bool HighDetail);
+    /// <summary>Nom normalisé : mots significatifs, index éventuel (« top_2 » → 2), marqueurs « _N » et « _PBR ».</summary>
+    record Key(string Words, int? Index, bool HighDetail, bool Pbr);
 
     static Key KeyOf(string name)
     {
         var words = new List<string>();
-        int? index = null; bool hd = false;
+        int? index = null; bool hd = false, pbr = false;
         foreach (var w in name.ToLowerInvariant().Split('_', StringSplitOptions.RemoveEmptyEntries))
         {
             if (NoiseWords.Contains(w)) continue;
             if (w == "n") { hd = true; continue; }
+            if (w == "pbr") { pbr = true; continue; }
             if (int.TryParse(w, out int i)) { index = i; continue; }
             words.Add(w);
         }
         words.Sort(StringComparer.Ordinal);
-        return new Key(string.Join('_', words), index, hd);
+        return new Key(string.Join('_', words), index, hd, pbr);
     }
 
     // « Top_SC_Hitman » et « Racergirl_top » donnent tous deux la tenue sans le nom de la pièce
@@ -56,17 +75,38 @@ public static partial class OutfitReader
         return string.Join('_', parts);
     }
 
-    /// <param name="highDetail">Utilise les variantes « _N » (plus détaillées) quand elles existent.</param>
-    /// <param name="skin">Textures de peau du corps de base, si l'APK du jeu est fourni.</param>
-    public static List<Outfit> Read(GameBundle bundle, bool highDetail = false, SkinTextures? skin = null)
+    /// <summary>Type de pièce normalisé (« Top », « Bottom », « Shoe », « Hair », « Head », « Accessory »…).</summary>
+    public static string PieceOf(string rest)
     {
+        foreach (var w in rest.Split('_'))
+        {
+            switch (w.ToLowerInvariant())
+            {
+                case "top": return "Top";
+                case "bottom": case "leg": return "Bottom";
+                case "shoe": case "shoes": case "feet": return "Shoe";
+                case "hair": return "Hair";
+                case "head": case "mask": case "face": return "Head";
+                case "accessory": return "Accessory";
+                case "hand": case "hands": return "Hands";
+            }
+        }
+        return "Other";
+    }
+
+    public static List<Outfit> Read(GameBundle bundle, bool highDetail = false, SkinTextures? skin = null) =>
+        Read(bundle, new OutfitReadOptions { HighDetail = highDetail, Skin = skin });
+
+    public static List<Outfit> Read(GameBundle bundle, OutfitReadOptions options)
+    {
+        bool highDetail = options.HighDetail;
         var objects = bundle.UmaObjects().ToList();
         var byId = objects.ToDictionary(o => o.PathId);
         var slots = objects.Where(o => o.ScriptClass == "SlotDataAsset").Select(ParseSlot).ToList();
         var overlays = objects.Where(o => o.ScriptClass == "OverlayDataAsset")
             .Select(o => (Obj: o, Key: KeyOf(o.Name))).ToList();
         var meshCache = new Dictionary<long, UmaMesh>();
-        var texCache = new Dictionary<long, DecodedTexture>();
+        var texCache = new Dictionary<(int, long), DecodedTexture?>();
         var skinParts = new Dictionary<long, HashSet<int>>();
 
         var outfits = new Dictionary<string, Outfit>(StringComparer.OrdinalIgnoreCase);
@@ -90,16 +130,34 @@ public static partial class OutfitReader
             var dedicated = slotIndex > 0 ? FindOverlay(slotKey, slotIndex + 1) : null;
             var main = FindOverlay(slotKey, null);
 
-            bool isSkin = dedicated == null && IsSkinSubmesh(slot.MeshPathId, mesh, slot.SubmeshIndex);
-            DecodedTexture? tex = isSkin ? skin?.For(gender) : Texture(dedicated ?? main);
-            outfit.Parts.Add(new OutfitPart(slot.SlotName, mesh, slot.SubmeshIndex, tex, isSkin));
+            // Les slots détaillés (_N) indiquent leur shader : « DTSAvatarSkin » sur un maillage à plusieurs
+            // morceaux = peau du corps. Les slots simplifiés utilisent tous le même shader : on devine
+            // la peau d'après la place du morceau dans la texture.
+            string material = byId.TryGetValue(slot.MaterialPathId, out var mo) ? mo.Name : "";
+            bool isSkin = dedicated == null && (highDetail
+                ? material.Contains("AvatarSkin") && !material.Contains("Emit") && mesh.Submeshes.Count > 1
+                : IsSkinSubmesh(slot.MeshPathId, mesh, slot.SubmeshIndex));
+            var textures = isSkin ? options.Skin?.For(gender) ?? TextureSet.Empty : Textures(dedicated ?? main);
+            var kind = material.Contains("CutOff", StringComparison.OrdinalIgnoreCase) || material.Contains("AvatarHair") ? MaterialKind.Cutout
+                : material.Contains("Glass", StringComparison.OrdinalIgnoreCase) ? MaterialKind.Transparent
+                : MaterialKind.Opaque;
+            outfit.Parts.Add(new OutfitPart(slot.SlotName, mesh, slot.SubmeshIndex, textures, isSkin, kind, PieceOf(m.Groups["rest"].Value)));
         }
         return outfits.Values.Where(o => o.Parts.Count > 0).ToList();
 
-        UmaObject? FindOverlay(Key slotKey, int? index) => overlays
-            .Where(o => o.Key.Words == slotKey.Words && o.Key.HighDetail == slotKey.HighDetail
-                        && (index == null ? o.Key.Index is null or 1 : o.Key.Index == index))
-            .Select(o => o.Obj).FirstOrDefault();
+        UmaObject? FindOverlay(Key slotKey, int? index)
+        {
+            bool IndexMatches(Key k) => index == null ? k.Index is null or 1 : k.Index == index;
+            // Les overlays « _PBR » n'ont pas de marqueur « _N » mais remplacent les overlays « _N »
+            if (slotKey.HighDetail && options.PreferPbr)
+            {
+                var pbr = overlays.FirstOrDefault(o => o.Key.Pbr && o.Key.Words == slotKey.Words && IndexMatches(o.Key)).Obj;
+                if (pbr != null) return pbr;
+            }
+            return overlays
+                .Where(o => !o.Key.Pbr && o.Key.Words == slotKey.Words && o.Key.HighDetail == slotKey.HighDetail && IndexMatches(o.Key))
+                .Select(o => o.Obj).FirstOrDefault();
+        }
 
         UmaMesh Mesh(long id)
         {
@@ -108,17 +166,31 @@ public static partial class OutfitReader
             return mesh;
         }
 
-        DecodedTexture? Texture(UmaObject? overlay)
+        TextureSet Textures(UmaObject? overlay)
         {
-            long texId = overlay == null ? 0 : FirstTexture(bundle, overlay);
-            if (texId == 0) return null;
-            if (!texCache.TryGetValue(texId, out var tex))
+            if (overlay == null) return TextureSet.Empty;
+            var refs = UmaAssets.OverlayTextures(overlay.Raw, p => p.FileId != 0
+                || bundle.GetInfo(p.PathId)?.TypeId == (int)AssetsTools.NET.Extra.AssetClassID.Texture2D);
+            return TextureSet.FromOverlay(refs.Select(Texture).ToList());
+        }
+
+        DecodedTexture? Texture(PPtr p)
+        {
+            if (p.IsNull) return null;
+            if (texCache.TryGetValue((p.FileId, p.PathId), out var tex)) return tex;
+            if (p.FileId != 0)
             {
-                var info = bundle.GetInfo(texId);
-                if (info == null) return null;
-                texCache[texId] = tex = TextureDecoder.Decode(bundle, info);
+                // Texture rangée dans un autre bundle (surtout les effets « VFX »)
+                var cab = bundle.ExternalName(p.FileId);
+                tex = cab == null ? null : options.External?.Invoke(cab, p.PathId);
             }
-            return tex;
+            else
+            {
+                var info = bundle.GetInfo(p.PathId);
+                try { tex = info == null ? null : TextureDecoder.Decode(bundle, info); }
+                catch (NotSupportedException) { tex = null; }
+            }
+            return texCache[(p.FileId, p.PathId)] = tex;
         }
 
         bool IsSkinSubmesh(long meshId, UmaMesh mesh, int submesh)
@@ -138,35 +210,16 @@ public static partial class OutfitReader
         int nameLen = BinaryPrimitives.ReadInt32LittleEndian(raw[p..]);
         string slotName = System.Text.Encoding.UTF8.GetString(raw.Slice(p + 4, nameLen));
         p = SkipString(raw, p);              // slotName
+        long material = BinaryPrimitives.ReadInt64LittleEndian(raw[(p + 4)..]);
         p += 12 + 4 + 8;                     // material, float, 8 octets
         long mesh = BinaryPrimitives.ReadInt64LittleEndian(raw[(p + 4)..]);
         int sub = BinaryPrimitives.ReadInt32LittleEndian(raw[(p + 12)..]);
-        return new Slot(slotName, mesh, sub);
+        return new Slot(slotName, material, mesh, sub);
     }
 
     static int SkipString(ReadOnlySpan<byte> raw, int p)
     {
         int len = BinaryPrimitives.ReadInt32LittleEndian(raw[p..]);
         return (p + 4 + len + 3) & ~3;
-    }
-
-    // OverlayDataAsset se termine par : textureList (int count + count × PPtr) puis PPtr material.
-    // La première texture de la liste est la couleur de base.
-    static long FirstTexture(GameBundle bundle, UmaObject overlay)
-    {
-        var raw = overlay.Raw.AsSpan();
-        int end = raw.Length - 12;
-        for (int count = 1; count <= 8; count++)
-        {
-            int at = end - 12 * count - 4;
-            if (at < 32) break;
-            if (BinaryPrimitives.ReadInt32LittleEndian(raw[at..]) != count) continue;
-            int fileId = BinaryPrimitives.ReadInt32LittleEndian(raw[(at + 4)..]);
-            long id = BinaryPrimitives.ReadInt64LittleEndian(raw[(at + 8)..]);
-            if (fileId != 0) return 0; // texture rangée dans un autre bundle : pas encore géré
-            var info = bundle.GetInfo(id);
-            if (info != null && info.TypeId == (int)AssetsTools.NET.Extra.AssetClassID.Texture2D) return id;
-        }
-        return 0;
     }
 }

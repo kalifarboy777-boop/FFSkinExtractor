@@ -6,7 +6,23 @@ using AssetsTools.NET;
 
 namespace FFSkinExtractor.Core;
 
-public sealed record DecodedTexture(string Name, int Width, int Height, byte[] Png);
+/// <summary>Texture décodée : PNG prêt à écrire et pixels BGRA (ligne du haut en premier).</summary>
+public sealed record DecodedTexture(string Name, int Width, int Height, byte[] Png)
+{
+    public byte[]? Pixels { get; init; }
+
+    /// <summary>Crée la texture depuis des pixels BGRA rangés comme dans Unity (ligne du bas en premier).</summary>
+    public static DecodedTexture FromUnityBgra(string name, int w, int h, byte[] bgra)
+    {
+        var top = new byte[w * h * 4];
+        for (int y = 0; y < h; y++)
+            Buffer.BlockCopy(bgra, (h - 1 - y) * w * 4, top, y * w * 4, w * 4);
+        return FromBgra(name, w, h, top);
+    }
+
+    public static DecodedTexture FromBgra(string name, int w, int h, byte[] topDown) =>
+        new(name, w, h, PngWriter.Encode(topDown, w, h, flipY: false)) { Pixels = topDown };
+}
 
 /// <summary>Convertit les Texture2D du jeu (ASTC, ETC, RGBA…) en PNG.</summary>
 public static class TextureDecoder
@@ -23,9 +39,8 @@ public static class TextureDecoder
         if ((data == null || data.Length == 0) && !stream.IsDummy && stream["size"].AsUInt > 0)
             data = bundle.ReadStreamData(stream["path"].AsString, (long)stream["offset"].AsULong, (int)stream["size"].AsUInt);
 
-        byte[] bgra = DecodeToBgra(data!, w, h, format, name);
         // Unity stocke les lignes de bas en haut
-        return new DecodedTexture(name, w, h, PngWriter.Encode(bgra, w, h, flipY: true));
+        return DecodedTexture.FromUnityBgra(name, w, h, DecodeToBgra(data!, w, h, format, name));
     }
 
     /// <summary>
@@ -48,8 +63,7 @@ public static class TextureDecoder
         for (int q = p + 20; q + 4 + size <= raw.Length; q += 4)
         {
             if (BinaryPrimitives.ReadInt32LittleEndian(r[q..]) != size) continue;
-            var bgra = DecodeToBgra(r.Slice(q + 4, size).ToArray(), w, h, format, name);
-            return new DecodedTexture(name, w, h, PngWriter.Encode(bgra, w, h, flipY: true));
+            return DecodedTexture.FromUnityBgra(name, w, h, DecodeToBgra(r.Slice(q + 4, size).ToArray(), w, h, format, name));
         }
         return null;
     }

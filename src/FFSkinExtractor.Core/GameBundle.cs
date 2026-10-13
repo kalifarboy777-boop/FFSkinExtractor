@@ -88,6 +88,18 @@ public sealed class GameBundle : IDisposable
         }
     }
 
+    /// <summary>Nom interne du fichier d'assets (« CAB-… »), par lequel les autres bundles le désignent.</summary>
+    public string CabName => _file.name;
+
+    /// <summary>Nom CAB du fichier visé par une référence externe (fileId ≥ 1).</summary>
+    public string? ExternalName(int fileId)
+    {
+        var ext = _file.file.Metadata.Externals;
+        if (fileId < 1 || fileId > ext.Count) return null;
+        var path = ext[fileId - 1].PathName;
+        return path[(path.LastIndexOf('/') + 1)..];
+    }
+
     public IEnumerable<AssetFileInfo> Textures() => _file.file.GetAssetsOfType(AssetClassID.Texture2D);
 
     public AssetFileInfo? GetInfo(long pathId) => _file.file.GetAssetInfo(pathId);
