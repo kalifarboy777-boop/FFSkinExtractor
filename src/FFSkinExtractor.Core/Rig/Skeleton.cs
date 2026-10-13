@@ -61,11 +61,11 @@ public sealed class Skeleton
 
     // ---- JSON intégré : [{ "name", "parent", "t":[x,y,z], "r":[x,y,z,w], "s":[x,y,z] }]
 
-    record JsonBone(string name, int parent, float[] t, float[] r, float[] s);
+    internal sealed record JsonBone(string name, int parent, float[] t, float[] r, float[] s);
 
     public static Skeleton FromJson(string gender, Stream json)
     {
-        var bones = JsonSerializer.Deserialize<List<JsonBone>>(json)!;
+        var bones = JsonSerializer.Deserialize(json, CoreJson.Default.ListJsonBone)!;
         return new Skeleton
         {
             Gender = gender,
@@ -76,7 +76,7 @@ public sealed class Skeleton
 
     public string ToJson() => JsonSerializer.Serialize(Bones.Select(b => new JsonBone(b.Name, b.Parent,
         [b.Position.X, b.Position.Y, b.Position.Z], [b.Rotation.X, b.Rotation.Y, b.Rotation.Z, b.Rotation.W],
-        [b.Scale.X, b.Scale.Y, b.Scale.Z])), new JsonSerializerOptions { WriteIndented = true });
+        [b.Scale.X, b.Scale.Y, b.Scale.Z])).ToList(), CoreJson.Indented.ListJsonBone);
 
     // ---- Lecture d'un asset Avatar Unity 2018.4 (sans typetree)
 

@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>FFSkinStudio</AssemblyName>
+    <RootNamespace>FFSkinExtractor.App</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FFSkinExtractor.Core\FFSkinExtractor.Core.csproj" />
+  </ItemGroup>
+
+  <!-- L'interface est intégrée à l'exécutable : un seul fichier à distribuer -->
+  <ItemGroup>
+    <Content Remove="wwwroot\**" />
+    <EmbeddedResource Include="wwwroot\**" LogicalName="www/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

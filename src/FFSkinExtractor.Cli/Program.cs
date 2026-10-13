@@ -42,10 +42,13 @@ if (args.Length < 2 || args[0] is not ("list" or "export"))
 {
     Console.WriteLine("""
         Utilisation :
-          ffextract list   <dossier files du jeu | bundle>   liste les tenues trouvées
-          ffextract export <bundle> [--outfit NOM] [--hd] [--out DOSSIER] [--apk JEU.xapk]
+          ffextract list   <dossier files du jeu | bundle> [--hd]   liste les tenues trouvées
+          ffextract export <dossier | bundle> [--outfit NOM] [--hd] [--out DOSSIER] [--apk JEU.xapk] [--no-base]
                                                              exporte les tenues en .glb
-                                                             (--apk : textures de peau du corps de base)
+                                                             (--apk : corps de base, visage et peau)
+          ffextract base   <JEU.xapk> [--out DOSSIER] [--lowpoly]   personnage de base seul
+          ffextract dump   <bundle> <dossier>                objets UMA bruts
+          ffextract skeleton <fichier avatar> <Female|Male> <sortie.json>
         """);
     return 1;
 }
@@ -61,7 +64,7 @@ if (Opt("--apk") is { } apk)
     Console.WriteLine("Lecture des données de base dans l'APK…");
     var sw = System.Diagnostics.Stopwatch.StartNew();
     gameData = GameData.Open(apk, Console.WriteLine);
-    skin = SkinTextures.From(gameData);
+    skin = SkinTextures.From(gameData, hd);
     Console.WriteLine($"  {gameData.FileCount} fichiers indexés en {sw.Elapsed.TotalSeconds:0.0} s");
     if (skin.Female == null) Console.WriteLine("  texture de peau femme introuvable, couleur unie à la place");
     if (skin.Male == null) Console.WriteLine("  texture de peau homme introuvable, couleur unie à la place");

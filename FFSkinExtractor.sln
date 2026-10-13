@@ -9,6 +9,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ffextract", "src\FFSkinExtr
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FFSkinExtractor.Core", "src\FFSkinExtractor.Core\FFSkinExtractor.Core.csproj", "{9C1B03C4-228A-46B2-B5CF-2CF23298D59E}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FFSkinExtractor.App", "src\FFSkinExtractor.App\FFSkinExtractor.App.csproj", "{404E269D-9D84-470A-A83A-37C8213BB117}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -26,9 +28,14 @@ Global
 		{9C1B03C4-228A-46B2-B5CF-2CF23298D59E}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{9C1B03C4-228A-46B2-B5CF-2CF23298D59E}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{9C1B03C4-228A-46B2-B5CF-2CF23298D59E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{404E269D-9D84-470A-A83A-37C8213BB117}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{404E269D-9D84-470A-A83A-37C8213BB117}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{404E269D-9D84-470A-A83A-37C8213BB117}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{404E269D-9D84-470A-A83A-37C8213BB117}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{22B7A382-2203-4DAE-A006-F8F02E0B0F35} = {81110429-2704-4E83-BE6C-680094AF9CC8}
 		{9C1B03C4-228A-46B2-B5CF-2CF23298D59E} = {81110429-2704-4E83-BE6C-680094AF9CC8}
+		{404E269D-9D84-470A-A83A-37C8213BB117} = {81110429-2704-4E83-BE6C-680094AF9CC8}
 	EndGlobalSection
 EndGlobal
