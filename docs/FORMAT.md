@@ -9,7 +9,7 @@ alignées sur 4 octets.
 | Emplacement | Contenu |
 |---|---|
 | `Android/data/com.dts.freefireth/files/contentcache/Optional/android/optionalavatarres/gameassetbundles/optionalab_avatar_*`, `optionalab_legendcloth_*`, `optionalab_tailor_*` | Bundles UnityFS des tenues (maillages, overlays, textures). Un fichier de 0 octet n'a pas encore été téléchargé. |
-| `…/Optional/android/gameassetbundles/optionalab_<n>` et `optionalab_<n>_<m>` (bundles numérotés) | La plupart des tenues de la boutique, une fois que le jeu a téléchargé toutes ses ressources : environ 530 bundles et 2 000 tenues en v1.132, dont quelques-uns en Unity 2022.3. Les sacs à dos et parachutes y sont rangés aussi (ignorés). |
+| `…/Optional/android/gameassetbundles/optionalab_<n>` et `optionalab_<n>_<m>` (bundles numérotés) | La plupart des tenues de la boutique, une fois que le jeu a téléchargé toutes ses ressources : environ 530 bundles et 2 000 tenues en v1.132, dont quelques-uns en Unity 2022.3. Une même tenue y est souvent répartie sur plusieurs bundles (le haut dans l'un, le bas dans un autre) : l'appli réunit les pièces par nom de tenue. Les sacs à dos et parachutes y sont rangés aussi (ignorés). |
 | `asset_pack_install_time.apk` (dans le `.xapk`) → `assets/bin/Data/` | Données de base : environ 44 000 fichiers sérialisés Unity, presque tous à un seul objet. Corps, visage et cheveux par défaut, recettes UMA, avatars (squelettes), textures de peau. |
 
 Les fichiers de `bin/Data` sont au format sérialisé v22 : la taille du fichier est un `i64` big-endian à l'offset

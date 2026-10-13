@@ -10,7 +10,7 @@ namespace FFSkinExtractor.App;
 sealed class ScanCache
 {
     // À augmenter quand la lecture des tenues change, pour relire tous les bundles
-    const int Version = 1;
+    const int Version = 2;
 
     public sealed record PartSummary(string Piece, string SlotName);
     public sealed record OutfitSummary(string Gender, string Name, bool HighDetail, List<PartSummary> Parts);

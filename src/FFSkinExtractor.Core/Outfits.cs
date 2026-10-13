@@ -133,8 +133,14 @@ public static partial class OutfitReader
                 case "hair": return "Hair";
                 case "head": case "mask": case "face": case "hat": return "Head";
                 case "clothes": return "Top";
-                case "accessory": return "Accessory";
+                case "accessory": case "accseeory": case "galss": case "glass": case "glasses": return "Accessory";
                 case "hand": case "hands": return "Hands";
+                // Vêtements simples nommés par leur type (« male_tshirt_mario », « female_a-skirt_… »)
+                case "tshirt": case "shirt": case "sleeveless": case "hoodie": case "sweater": case "jacket": return "Top";
+                case "pants": case "pant": case "a-skirt": case "skirt": case "bellbottoms": case "casualpants":
+                case "ballpants": case "shorts": case "jeans": return "Bottom";
+                case "boots": case "leathershoe": case "hikingshoes": case "sneakers": return "Shoe";
+                case "strawhat": case "cap": return "Head";
             }
         }
         return "Other";
