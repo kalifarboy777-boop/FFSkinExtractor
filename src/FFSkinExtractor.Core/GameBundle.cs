@@ -18,7 +18,7 @@ public sealed record UmaObject(long PathId, string Name, string ScriptClass, byt
 /// Ouvre un bundle Free Fire (UnityFS, éventuellement compressé en gzip comme dans l'APK)
 /// et donne accès aux objets UMA et aux textures.
 /// </summary>
-public sealed class GameBundle : IDisposable
+public sealed partial class GameBundle : IDisposable
 {
     readonly AssetsManager _am = new();
     readonly BundleFileInstance _bundle;
@@ -53,6 +53,24 @@ public sealed class GameBundle : IDisposable
 
     /// <summary>Un fichier sans contenu (0 octet) veut dire que le jeu ne l'a pas encore téléchargé.</summary>
     public static bool IsDownloaded(string path) => new FileInfo(path).Length > 0;
+
+    static readonly string[] OutfitPrefixes = ["optionalab_avatar", "optionalab_legendcloth", "optionalab_tailor"];
+
+    /// <summary>
+    /// Bundle susceptible de contenir des tenues : « optionalab_avatar… », « optionalab_legendcloth… »,
+    /// « optionalab_tailor… » et les bundles numérotés (« optionalab_672 », « optionalab_1_1 ») où le jeu
+    /// range la plupart des tenues de la boutique une fois téléchargées.
+    /// </summary>
+    public static bool IsOutfitBundle(string path)
+    {
+        string name = System.IO.Path.GetFileName(path).Split('.')[0];
+        if (name.EndsWith("_animctrl", StringComparison.OrdinalIgnoreCase)) return false;
+        return OutfitPrefixes.Any(p => name.StartsWith(p, StringComparison.OrdinalIgnoreCase))
+               || NumberedRegex().IsMatch(name);
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^optionalab_\d+(_\d+)*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)]
+    private static partial System.Text.RegularExpressions.Regex NumberedRegex();
 
     public IEnumerable<UmaObject> UmaObjects()
     {

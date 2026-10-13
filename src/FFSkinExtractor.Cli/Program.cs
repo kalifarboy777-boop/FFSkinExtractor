@@ -72,8 +72,7 @@ if (Opt("--apk") is { } apk)
 
 var bundles = Directory.Exists(args[1])
     ? Directory.EnumerateFiles(args[1], "*", SearchOption.AllDirectories)
-        .Where(f => Path.GetFileName(f).StartsWith("optionalab_avatar") || Path.GetFileName(f).StartsWith("optionalab_legendcloth")
-                    || Path.GetFileName(f).StartsWith("optionalab_tailor"))
+        .Where(GameBundle.IsOutfitBundle)
     : [args[1]];
 
 int errors = 0;

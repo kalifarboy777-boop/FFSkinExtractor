@@ -148,7 +148,7 @@ public static partial class OutfitReader
         bool highDetail = options.HighDetail;
         var objects = bundle.UmaObjects().ToList();
         var byId = objects.ToDictionary(o => o.PathId);
-        var slots = objects.Where(o => o.ScriptClass == "SlotDataAsset").Select(ParseSlot).ToList();
+        var slots = objects.Where(o => o.ScriptClass == "SlotDataAsset").Select(TryParseSlot).OfType<Slot>().ToList();
         var overlays = objects.Where(o => o.ScriptClass == "OverlayDataAsset")
             .Select(o => (Obj: o, Key: KeyOf(o.Name))).ToList();
         var meshCache = new Dictionary<long, UmaMesh>();
@@ -170,7 +170,12 @@ public static partial class OutfitReader
             if (!outfits.TryGetValue(key, out var outfit))
                 outfits[key] = outfit = new Outfit(outfitName, gender, []);
 
-            var mesh = Mesh(slot.MeshPathId);
+            UmaMesh mesh;
+            try { mesh = Mesh(slot.MeshPathId); }
+            catch (Exception e) when (e is InvalidDataException or ArgumentOutOfRangeException or IndexOutOfRangeException)
+            {
+                continue;   // maillage d'un format inconnu : on garde le reste de la tenue
+            }
             var slotKey = KeyOf(slot.SlotName);
             int slotIndex = slotKey.Index ?? 0;
             // Overlay propre à ce sous-maillage (« top_ingame_1 » → « top_2_lobby_overlay »),
@@ -328,6 +333,12 @@ public static partial class OutfitReader
                 skinParts[meshId] = set = UvCoverage.SkinSubmeshes(mesh);
             return set.Contains(submesh);
         }
+    }
+
+    static Slot? TryParseSlot(UmaObject o)
+    {
+        try { return ParseSlot(o); }
+        catch (ArgumentOutOfRangeException) { return null; }   // slot d'un format inconnu
     }
 
     // SlotDataAsset : m_Name, slotName, PPtr material, float, 8 octets, PPtr meshData, int submeshIndex

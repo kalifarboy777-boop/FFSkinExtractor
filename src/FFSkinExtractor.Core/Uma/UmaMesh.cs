@@ -76,11 +76,26 @@ public static class UmaMeshDecoder
         for (int i = 0; i < bindCount; i++) bindPoses[i] = r.Matrix();
         // Tableaux UMA standard, presque toujours vides : unityBoneWeights, vertices, normals, tangents,
         // colors32, uv, uv2, uv3, uv4, clothSkinning, clothSkinningSerialized, submeshes
-        foreach (int size in StandardArraySizes)
+        // Quelques maillages récents remplissent ces tableaux (UV en flottants) au lieu des données compressées,
+        // parfois avec une taille d'élément différente : on la vérifie sur le tableau suivant.
+        Vector2[]? plainUv = null;
+        for (int a = 0; a < StandardArraySizes.Length; a++)
         {
+            int size = StandardArraySizes[a];
             int c = r.Int();
-            if (size > 0) { r.Skip(c * size); continue; }
-            for (int k = 0; k < c; k++) r.Skip(r.Int() * 4);   // submeshes : int[] par élément
+            if (size == 0)
+            {
+                for (int k = 0; k < c; k++) r.Skip(r.Int() * 4);   // submeshes : int[] par élément
+                continue;
+            }
+            if (c == 0) continue;
+            int es = r.ElementSize(c, size);
+            if (a is 5 or 6 && es == 8 && plainUv == null)
+            {
+                plainUv = new Vector2[c];
+                for (int i = 0; i < c; i++) plainUv[i] = new Vector2(r.Float(), r.Float());
+            }
+            else r.Skip(c * es);
         }
         var bones = ReadBones(ref r);
         r.Int();                           // umaBoneCount
@@ -92,10 +107,16 @@ public static class UmaMeshDecoder
         r.Int();
 
         // 1. UV : n × (u16, u16) normalisés
-        Expect(r.Int(), n, name, "UV");
-        var uv = new Vector2[n];
-        for (int i = 0; i < n; i++)
-            uv[i] = new Vector2(r.U16LE() / 65535f, r.U16LE() / 65535f);
+        int uvCount = r.Int();
+        Vector2[] uv;
+        if (uvCount == 0 && plainUv?.Length == n) uv = plainUv;
+        else
+        {
+            Expect(uvCount, n, name, "UV");
+            uv = new Vector2[n];
+            for (int i = 0; i < n; i++)
+                uv[i] = new Vector2(r.U16LE() / 65535f, r.U16LE() / 65535f);
+        }
 
         // 2. Poids détaillés : n × (4 × u8 index, 4 × u16 poids sur 10000), ou vide
         VertexWeights[]? weights = null;
@@ -111,8 +132,9 @@ public static class UmaMeshDecoder
                     r.U16LE() / 10000f, r.U16LE() / 10000f, r.U16LE() / 10000f, r.U16LE() / 10000f);
             }
         }
-        // 3-6. tableaux de n × 4 octets optionnels (normales/couleurs compressées, UV secondaires)
-        for (int k = 0; k < 4; k++) r.SkipOptional(n, name);
+        // 3-6. tableaux de n × 4 octets optionnels (normales/couleurs compressées, UV secondaires) ;
+        // certains maillages en ont moins de quatre : on s'arrête dès que la taille des positions apparaît
+        for (int k = 0; k < 4 && r.PeekInt() != n * 6; k++) r.SkipOptional(n, name);
 
         // 7. Positions : n × 3 × u16 big-endian, Z vers le haut et Y vers l'arrière dans les données
         Expect(r.Int(), n * 6, name, "positions");
@@ -238,6 +260,21 @@ public static class UmaMeshDecoder
             for (int i = 0; i < 16; i++) f[i] = Float();
             return new(f[0], f[4], f[8], f[12], f[1], f[5], f[9], f[13], f[2], f[6], f[10], f[14], f[3], f[7], f[11], f[15]);
         }
+        /// <summary>Taille d'élément d'un tableau de c éléments : la taille attendue, sinon celle qui mène à un tableau plausible.</summary>
+        public readonly int ElementSize(int c, int expected)
+        {
+            // D'abord un tableau suivant de même longueur (sûr), puis un tableau vide (un flottant nul y ressemble)
+            foreach (bool sameLength in (bool[])[true, false])
+                foreach (int size in (int[])[expected, 4, 8, 12, 16, 32])
+                {
+                    int next = _p + c * size;
+                    if (next + 4 > _d.Length) continue;
+                    int v = BinaryPrimitives.ReadInt32LittleEndian(_d[next..]);
+                    if (sameLength ? v == c : v == 0) return size;
+                }
+            return expected;
+        }
+        public readonly int PeekInt() => _p + 4 <= _d.Length ? BinaryPrimitives.ReadInt32LittleEndian(_d[_p..]) : -1;
         public int Int() { int v = BinaryPrimitives.ReadInt32LittleEndian(_d[_p..]); _p += 4; return v; }
         public uint UInt() { uint v = BinaryPrimitives.ReadUInt32LittleEndian(_d[_p..]); _p += 4; return v; }
         public float Float() { float v = BinaryPrimitives.ReadSingleLittleEndian(_d[_p..]); _p += 4; return v; }
@@ -252,12 +289,27 @@ public static class UmaMeshDecoder
             if (len < 0 || len > 1024) throw new ArgumentOutOfRangeException(nameof(len));
             var s = System.Text.Encoding.UTF8.GetString(_d.Slice(_p, len)); _p += len; Align(); return s;
         }
-        /// <summary>Tableau vide, ou n éléments de 4 octets.</summary>
+        /// <summary>
+        /// Tableau vide, ou n éléments de 4 octets (parfois 8, 12 ou 16 : la taille retenue est celle après laquelle
+        /// on retombe sur un tableau attendu — vide, n éléments ou les positions).
+        /// </summary>
         public void SkipOptional(int n, string name)
         {
             int c = Int();
-            if (c == n) { Skip(c * 4); return; }
-            if (c != 0) throw new InvalidDataException($"{name} : tableau inattendu ({c} éléments) à 0x{_p - 4:x}");
+            if (c == 0) return;
+            if (c == n)
+            {
+                foreach (int size in (int[])[4, 8, 12, 16])
+                {
+                    int next = _p + c * size;
+                    if (next + 4 > _d.Length) break;
+                    int v = BinaryPrimitives.ReadInt32LittleEndian(_d[next..]);
+                    if (v == 0 || v == n || v == n * 6) { Skip(c * size); return; }
+                }
+                Skip(c * 4);
+                return;
+            }
+            throw new InvalidDataException($"{name} : tableau inattendu ({c} éléments) à 0x{_p - 4:x}");
         }
     }
 }

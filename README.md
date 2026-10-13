@@ -29,7 +29,10 @@ un format compressé propre au jeu, qu'AssetStudio ne sait pas lire. Ce projet d
 Mets dans un même dossier (par exemple `Documents\FFdata`) :
 
 1. Le dossier `Android/data/com.dts.freefireth/files` copié depuis le téléphone. Ouvre d'abord les tenues
-   voulues dans le jeu pour qu'il les télécharge : un bundle de 0 octet n'est pas encore téléchargé.
+   voulues dans le jeu pour qu'il les télécharge : un bundle de 0 octet n'est pas encore téléchargé. Après le
+   téléchargement complet des ressources du jeu, les bundles numérotés (`optionalab_123`) contiennent la plupart
+   des tenues de la boutique : la première analyse lit plusieurs centaines de bundles (en parallèle), les suivantes
+   reprennent l'inventaire gardé dans `%APPDATA%\FFSkinStudio\scan-cache.json`.
 2. Le `.xapk` du jeu (même version que les données). Il fournit le corps, le visage et la peau ; sans lui les tenues
    s'exportent seules, avec une couleur de peau unie.
 

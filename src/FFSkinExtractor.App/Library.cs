@@ -70,7 +70,6 @@ public enum LibraryState { NotConfigured, Scanning, Ready, Error }
 /// </summary>
 public sealed class Library : IDisposable
 {
-    static readonly string[] BundlePrefixes = ["optionalab_avatar", "optionalab_legendcloth", "optionalab_tailor"];
     public static readonly string[] PieceOrder = ["Top", "Bottom", "Shoe", "Head", "Hair", "Accessory", "Hands", "Other"];
     const int OpenBundleLimit = 6;
 
@@ -133,7 +132,7 @@ public sealed class Library : IDisposable
             Message = "Recherche des bundles de tenues…";
             var files = Directory.EnumerateFiles(folder, "*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true })
                 .ToList();
-            var bundles = files.Where(f => BundlePrefixes.Any(p => Path.GetFileName(f).StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+            var bundles = files.Where(GameBundle.IsOutfitBundle)
                 .Where(GameBundle.IsDownloaded).OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToList();
             BundleCount = bundles.Count;
             if (bundles.Count == 0) throw new InvalidDataException("Aucun bundle de tenue (optionalab_avatar…) dans ce dossier.");
@@ -146,31 +145,33 @@ public sealed class Library : IDisposable
             try { Catalog = await ItemCatalog.LoadOrDownloadAsync(Path.Combine(AppSettings.Folder, "itemData.json")); }
             catch (Exception) { Catalog = null; }
 
+            // Lecture en parallèle (les bundles numérotés se comptent par centaines) ; un cache évite de relire
+            // à chaque lancement les bundles qui n'ont pas changé
+            var cache = ScanCache.Load();
+            var results = new ScanCache.BundleScan?[bundles.Count];
+            int done = 0;
+            Parallel.For(0, bundles.Count, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) }, i =>
+            {
+                results[i] = cache.Get(bundles[i]) ?? ReadBundle(bundles[i]);
+                int n = Interlocked.Increment(ref done);
+                Progress = (double)n / bundles.Count;
+                Message = $"Lecture des bundles ({n}/{bundles.Count})";
+            });
+            cache.Save(bundles, results);
+
             var entries = new List<OutfitEntry>();
             var cabs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var layers = new List<HeadLayerRef>();
             var overlayIndex = new Dictionary<string, (string, string)>();
             for (int i = 0; i < bundles.Count; i++)
             {
+                if (results[i] is not { } r) continue;
                 string label = Path.GetFileName(bundles[i]).Split('.')[0];
-                Message = $"Lecture de {label} ({i + 1}/{bundles.Count})";
-                Progress = (double)i / bundles.Count;
-                try
-                {
-                    using var bundle = new GameBundle(bundles[i]);
-                    cabs.TryAdd(bundle.CabName, bundles[i]);
-                    foreach (var o in bundle.UmaObjects())
-                    {
-                        if (!o.ScriptClass.StartsWith("OverlayDataAsset")) continue;
-                        if (HeadPaint.Classify(o.Name) is { } c)
-                            layers.Add(new HeadLayerRef(c.Gender, c.Kind, c.Name, bundles[i], o.Name, o.ScriptClass.EndsWith("Atlas")));
-                        else overlayIndex.TryAdd(OutfitReader.OverlayKey(o.Name), (bundles[i], o.Name));
-                    }
-                    foreach (bool hd in new[] { true, false })
-                        foreach (var o in OutfitReader.Read(bundle, new OutfitReadOptions { HighDetail = hd }))
-                            entries.Add(Describe(o, hd, label, bundles[i]));
-                }
-                catch (Exception) { /* bundle illisible : on passe au suivant */ }
+                foreach (var o in r.Outfits)
+                    if (!IsAccessoryOnly(o.Name)) entries.Add(Describe(o, label, bundles[i]));
+                if (r.Cab != null) cabs.TryAdd(r.Cab, bundles[i]);
+                layers.AddRange(r.Layers.Select(l => new HeadLayerRef(l.Gender, l.Kind, l.Name, bundles[i], l.Overlay, l.Atlas)));
+                foreach (var (key, overlay) in r.Overlays) overlayIndex.TryAdd(key, (bundles[i], overlay));
             }
             _cabToBundle = cabs;
             lock (_layerCache) _layerCache.Clear();
@@ -204,6 +205,11 @@ public sealed class Library : IDisposable
         }
     }
 
+    // Sacs à dos, parachutes… rangés avec les tenues dans les bundles numérotés : ce ne sont pas des vêtements
+    static bool IsAccessoryOnly(string outfitName) =>
+        outfitName.Contains("backpack", StringComparison.OrdinalIgnoreCase)
+        || outfitName.Contains("parachute", StringComparison.OrdinalIgnoreCase);
+
     static string? FindPackage(List<string> files) =>
         files.Where(f => f.EndsWith(".xapk", StringComparison.OrdinalIgnoreCase)
                          || Path.GetFileName(f).Equals("asset_pack_install_time.apk", StringComparison.OrdinalIgnoreCase)
@@ -223,8 +229,33 @@ public sealed class Library : IDisposable
         catch (Exception) { return null; }
     }
 
-    OutfitEntry Describe(Outfit o, bool hd, string label, string path)
+    /// <summary>Inventaire d'un bundle : tenues (sans maillages ni textures), calques du visage et overlays.</summary>
+    static ScanCache.BundleScan? ReadBundle(string path)
     {
+        try
+        {
+            using var bundle = new GameBundle(path);
+            var layers = new List<ScanCache.Layer>();
+            var overlays = new List<(string, string)>();
+            foreach (var o in bundle.UmaObjects())
+            {
+                if (!o.ScriptClass.StartsWith("OverlayDataAsset")) continue;
+                if (HeadPaint.Classify(o.Name) is { } c)
+                    layers.Add(new ScanCache.Layer(c.Gender, c.Kind, c.Name, o.Name, o.ScriptClass.EndsWith("Atlas")));
+                else overlays.Add((OutfitReader.OverlayKey(o.Name), o.Name));
+            }
+            var outfits = new List<ScanCache.OutfitSummary>();
+            foreach (bool hd in new[] { true, false })
+                foreach (var o in OutfitReader.Read(bundle, new OutfitReadOptions { HighDetail = hd }))
+                    outfits.Add(new ScanCache.OutfitSummary(o.Gender, o.Name, hd, o.Parts.Select(p => new ScanCache.PartSummary(p.Piece, p.SlotName)).ToList()));
+            return new ScanCache.BundleScan(bundle.CabName, outfits, layers, overlays);
+        }
+        catch (Exception) { return null; /* bundle illisible : on passe au suivant */ }
+    }
+
+    OutfitEntry Describe(ScanCache.OutfitSummary o, string label, string path)
+    {
+        bool hd = o.HighDetail;
         var matches = Catalog?.Match(o.Gender, o.Name) ?? [];
         var items = matches.Where(m => m.Score > 0).GroupBy(m => m.Item.Piece).ToDictionary(g => g.Key, g => g.First());
         var character = items.TryGetValue("Character", out var c) ? ItemRef.From(c.Item) : null;

@@ -9,6 +9,7 @@ alignées sur 4 octets.
 | Emplacement | Contenu |
 |---|---|
 | `Android/data/com.dts.freefireth/files/contentcache/Optional/android/optionalavatarres/gameassetbundles/optionalab_avatar_*`, `optionalab_legendcloth_*`, `optionalab_tailor_*` | Bundles UnityFS des tenues (maillages, overlays, textures). Un fichier de 0 octet n'a pas encore été téléchargé. |
+| `…/Optional/android/gameassetbundles/optionalab_<n>` et `optionalab_<n>_<m>` (bundles numérotés) | La plupart des tenues de la boutique, une fois que le jeu a téléchargé toutes ses ressources : environ 530 bundles et 2 000 tenues en v1.132, dont quelques-uns en Unity 2022.3. Les sacs à dos et parachutes y sont rangés aussi (ignorés). |
 | `asset_pack_install_time.apk` (dans le `.xapk`) → `assets/bin/Data/` | Données de base : environ 44 000 fichiers sérialisés Unity, presque tous à un seul objet. Corps, visage et cheveux par défaut, recettes UMA, avatars (squelettes), textures de peau. |
 
 Les fichiers de `bin/Data` sont au format sérialisé v22 : la taille du fichier est un `i64` big-endian à l'offset
@@ -71,7 +72,10 @@ Peaux par défaut : `female_body_Overlay_N` (`female_Newbody_d/_n/_s`), `female_
 1. `m_Name`, puis le nom du slot, puis 2 `i32`.
 2. `bindPoses` : `i32 count` + count × 64 octets (matrice 4×4, rangée par lignes).
 3. 12 tableaux Unity standards, en général vides, de taille d'élément `32, 12, 12, 16, 4, 8, 8, 8, 8, 8, 8` puis
-   les sous-maillages (`int[]` par élément). Les cheveux de base ont des tangentes.
+   les sous-maillages (`int[]` par élément). Les cheveux de base ont des tangentes. Quelques maillages récents
+   (« Cos_Fauxfurhat », « Cos_Colorfest ») remplissent ces tableaux, avec parfois une autre taille d'élément
+   (12 au lieu de 4) : la taille retenue est celle après laquelle on retombe sur un tableau vide ou de même longueur.
+   Leurs UV sont alors dans le premier tableau de n × 8 octets (2 × `f32`) et le tableau compressé d'UV est vide.
 4. `umaBones` : `i32 count`, puis par os position (3 f32), rotation (4 f32), échelle (3 f32), nom, `u32 hash`,
    `u32 hash du parent`.
 5. `umaBoneCount`, hash de la racine (`0x332677a9` = CRC32 de `bone_Root`), `boneNameHashes` (`i32 count` + `u32`).
@@ -83,7 +87,8 @@ Tableaux préfixés par leur longueur, alignés sur 4 :
 
 1. UV : n × (`u16`, `u16`) / 65535.
 2. Poids 12 octets : 4 × `u8` index d'os, 4 × `u16` poids (somme 10 000), ou vide.
-3. Quatre tableaux optionnels de n × 4 octets.
+3. Jusqu'à quatre tableaux optionnels de n éléments, en général de 4 octets (parfois 8). Certains maillages
+   en ont moins : la liste s'arrête dès que la longueur des positions (6n) apparaît.
 4. Positions : n × 3 × **`u16` big-endian**. Repère Unity = (x, z, −y) des données ; plages ±1 en X et ±2 en Y/Z
    (unités du jeu, ×2 à l'export pour retrouver la taille du squelette).
 5. Normales : n × 3 octets (recalculées à l'export, plus fiables).
