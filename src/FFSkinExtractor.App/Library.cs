@@ -17,11 +17,36 @@ public sealed record OutfitEntry(string Id, string Gender, string Name, string D
     string Bundle, List<PieceEntry> Pieces, ItemRef? Character)
 {
     internal string BundlePath { get; init; } = "";
+    /// <summary>Clé indépendante de la qualité : « Male:Sc_Hitman ».</summary>
+    public string Key => Gender + ":" + Name;
+    /// <summary>Tenue d'un personnage (Rafael, Kelly…) : son visage et sa coiffure font le personnage.</summary>
+    public bool IsCharacter { get; init; }
+    /// <summary>Tous les ID d'objets reliés à chaque pièce (plusieurs objets peuvent partager un maillage).</summary>
+    internal Dictionary<string, List<ItemRef>> PieceItems { get; init; } = [];
 }
 
-/// <summary>Pièces choisies dans l'interface : pour chaque type de pièce, la tenue d'où elle vient.</summary>
-public sealed record Selection(string Gender, bool HighDetail, Dictionary<string, string> Pieces,
+/// <summary>Un personnage du jeu, choisi tel quel (visage, coiffure et tenue d'origine).</summary>
+public sealed record CharacterEntry(string Key, string Gender, string Name, string Internal, ItemRef? Item);
+
+/// <summary>Un objet qu'on peut mettre dans un emplacement du constructeur de skin.</summary>
+/// <param name="Value">ID d'objet, ou « o:Genre:Tenue:Pièce » pour une pièce sans ID connu.</param>
+public sealed record SlotItem(string Value, long? Id, string Name, string Rarity, string? IconUrl, string Slot,
+    string Gender, string Outfit);
+
+/// <summary>Un bundle de la boutique et les objets qu'il met dans chaque emplacement.</summary>
+public sealed record BundleEntry(string Value, long? Id, string Name, string Rarity, string? IconUrl, string? Gender,
+    bool Available, Dictionary<string, string> Slots, string? Outfit);
+
+/// <summary>Ce que l'interface demande : un personnage, et des objets par emplacement (Cheveux, Masque, Haut…).</summary>
+public sealed record Look(string Gender, bool HighDetail, string? Character, Dictionary<string, string>? Slots,
     bool Base = true, bool Skinned = true, bool Pbr = true);
+
+/// <summary>Pièces choisies : pour chaque type de pièce, la tenue d'où elle vient.</summary>
+public sealed record Selection(string Gender, bool HighDetail, Dictionary<string, string> Pieces,
+    bool Base = true, bool Skinned = true, bool Pbr = true)
+{
+    public string? Name { get; init; }
+}
 
 public enum LibraryState { NotConfigured, Scanning, Ready, Error }
 
@@ -49,6 +74,9 @@ public sealed class Library : IDisposable
     public double Progress { get; private set; }
     public string Message { get; private set; } = "Indique le dossier des données du jeu.";
     public IReadOnlyList<OutfitEntry> Outfits { get; private set; } = [];
+    public IReadOnlyList<CharacterEntry> Characters { get; private set; } = [];
+    public IReadOnlyList<SlotItem> SlotItems { get; private set; } = [];
+    public IReadOnlyList<BundleEntry> Bundles { get; private set; } = [];
     public ItemCatalog? Catalog { get; private set; }
     public string? GamePackage { get; private set; }
     public int BundleCount { get; private set; }
@@ -117,12 +145,13 @@ public sealed class Library : IDisposable
             }
             _cabToBundle = cabs;
             Outfits = entries.OrderBy(e => e.Gender).ThenBy(e => e.DisplayName, StringComparer.OrdinalIgnoreCase).ToList();
+            BuildCatalogViews();
 
             Message = "Lecture du corps de base…";
             var data = await _gameData;
             Progress = 1;
             State = LibraryState.Ready;
-            Message = $"{Outfits.Count(o => o.HighDetail)} tenues HD, {Outfits.Count(o => !o.HighDetail)} en jeu"
+            Message = $"{Characters.Count} personnages, {Bundles.Count(b => b.Available)} bundles, {SlotItems.Count} objets"
                 + (data == null ? " · paquet du jeu absent : pas de corps de base" : "");
         }
         catch (Exception e)
@@ -153,7 +182,8 @@ public sealed class Library : IDisposable
 
     OutfitEntry Describe(Outfit o, bool hd, string label, string path)
     {
-        var items = Catalog?.BestPerPiece(o.Gender, o.Name) ?? [];
+        var matches = Catalog?.Match(o.Gender, o.Name) ?? [];
+        var items = matches.Where(m => m.Score > 0).GroupBy(m => m.Item.Piece).ToDictionary(g => g.Key, g => g.First());
         var character = items.TryGetValue("Character", out var c) ? ItemRef.From(c.Item) : null;
         // Une « tête » de tenue de personnage est le visage du personnage lui-même
         var pieces = o.Parts.GroupBy(p => p.Piece)
@@ -161,9 +191,134 @@ public sealed class Library : IDisposable
             .Select(g => new PieceEntry(g.Key, g.Select(p => p.SlotName).Distinct().ToList(),
                 ItemFor(items, g.Key) ?? (g.Key == "Head" ? character : null)))
             .ToList();
+        var pieceItems = pieces.ToDictionary(p => p.Piece, p => AllItemsFor(matches, p.Piece, p.Item));
+        bool isCharacter = pieces.Any(p => p.Piece == "Head")
+            && (character != null || o.Name.StartsWith("sc_", StringComparison.OrdinalIgnoreCase));
         string id = $"{(hd ? "hd" : "lo")}:{label}:{o.Gender}:{o.Name}";
         return new OutfitEntry(id, o.Gender, o.Name, DisplayName(o.Name, pieces, character), hd, label, pieces, character)
-            { BundlePath = path };
+            { BundlePath = path, IsCharacter = isCharacter, PieceItems = pieceItems };
+    }
+
+    // Tous les objets au meilleur score pour une pièce (« Olivia's Nurse Uniform » et « Intern Uniform »
+    // partagent le même maillage)
+    static List<ItemRef> AllItemsFor(List<ItemMatch> matches, string piece, ItemRef? main)
+    {
+        if (main == null) return [];
+        var mainMatch = matches.First(m => m.Item.Id == main.Id);
+        return matches.Where(m => m.Item.Piece == mainMatch.Item.Piece && m.Score == mainMatch.Score)
+            .Select(m => ItemRef.From(m.Item)).ToList();
+    }
+
+    /// <summary>Emplacement du constructeur de skin pour une pièce (null : la pièce fait partie du personnage).</summary>
+    public static string? SlotOf(string piece, bool character) => piece switch
+    {
+        "Head" or "Hair" when character => null,
+        "Accessory" => "Mask",
+        _ => piece,
+    };
+
+    // Vues pour l'interface : personnages, objets par emplacement, bundles de la boutique
+    void BuildCatalogViews()
+    {
+        // Une entrée par tenue, de préférence en HD
+        var unique = Outfits.GroupBy(o => o.Key).Select(g => g.OrderByDescending(o => o.HighDetail).First()).ToList();
+
+        Characters = unique.Where(o => o.IsCharacter)
+            .Select(o => new CharacterEntry(o.Key, o.Gender, o.Character?.Name ?? o.DisplayName, o.Name,
+                o.Character ?? o.Pieces.First(p => p.Piece == "Head").Item))
+            .OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase).ToList();
+
+        var slotItems = new List<SlotItem>();
+        var index = new Dictionary<long, List<(string Key, string Piece)>>();
+        var bundles = new List<BundleEntry>();
+        var usedBundles = new HashSet<long>();
+        foreach (var o in unique)
+        {
+            var slots = new Dictionary<string, string>();
+            foreach (var p in o.Pieces)
+            {
+                if (SlotOf(p.Piece, o.IsCharacter) is not { } slot) continue;
+                var ids = o.PieceItems.GetValueOrDefault(p.Piece) ?? [];
+                if (ids.Count == 0)
+                {
+                    string value = $"o:{o.Key}:{p.Piece}";
+                    slotItems.Add(new SlotItem(value, null, $"{o.DisplayName} ({SlotLabel(slot)})", "NONE", null, slot, o.Gender, o.Name));
+                    slots.TryAdd(slot, value);
+                }
+                foreach (var item in ids)
+                {
+                    slotItems.Add(new SlotItem(item.Id.ToString(), item.Id, item.Name, item.Rarity, item.IconUrl, slot, o.Gender, o.Name));
+                    if (!index.TryGetValue(item.Id, out var list)) index[item.Id] = list = [];
+                    list.Add((o.Key, p.Piece));
+                    slots.TryAdd(slot, item.Id.ToString());
+                }
+            }
+            if (slots.Count == 0) continue;
+            var shop = Catalog?.BundleFor(o.Gender, o.Name, o.DisplayName);
+            if (shop is { Score: >= 10 }) usedBundles.Add(shop.Item.Id);
+            var bi = shop is { Score: >= 10 } ? shop.Item : null;
+            bundles.Add(new BundleEntry("b:" + o.Key, bi?.Id, bi?.Name ?? o.DisplayName, bi?.Rarity ?? "NONE",
+                bi?.IconUrl ?? o.Pieces.Select(p => p.Item).FirstOrDefault(i => i != null)?.IconUrl,
+                o.Gender, true, slots, o.Name));
+        }
+        // Bundles de la boutique dont les fichiers ne sont pas (encore) téléchargés par le jeu
+        if (Catalog != null)
+            foreach (var b in Catalog.Bundles.Where(b => !usedBundles.Contains(b.Id)))
+                bundles.Add(new BundleEntry("i:" + b.Id, b.Id, b.Name, b.Rarity, b.IconUrl, b.Gender, false, [], null));
+
+        _itemIndex = index;
+        SlotItems = slotItems.DistinctBy(i => (i.Value, i.Gender)).ToList();
+        Bundles = bundles.OrderByDescending(b => b.Available).ThenBy(b => b.Name, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    Dictionary<long, List<(string Key, string Piece)>> _itemIndex = [];
+
+    public static string SlotLabel(string slot) => slot switch
+    {
+        "Hair" => "Cheveux", "Mask" => "Masque", "Head" => "Tête", "Top" => "Haut", "Bottom" => "Bas",
+        "Shoe" => "Chaussures", "Hands" => "Mains", _ => "Autre",
+    };
+
+    OutfitEntry? ByKey(string key, bool hd) =>
+        Outfits.FirstOrDefault(o => o.Key == key && o.HighDetail == hd) ?? Outfits.FirstOrDefault(o => o.Key == key);
+
+    /// <summary>
+    /// Traduit un personnage et des ID d'objets en pièces : la tenue d'origine du personnage,
+    /// puis chaque ID remplace la pièce de son emplacement. Renvoie aussi les valeurs non reconnues.
+    /// </summary>
+    public (Selection Selection, List<string> Unknown) Resolve(Look look)
+    {
+        var pieces = new Dictionary<string, string>();
+        var unknown = new List<string>();
+        string? name = null;
+        if (look.Character is { Length: > 0 } ck && ByKey(ck, look.HighDetail) is { } ch)
+        {
+            foreach (var p in ch.Pieces) pieces[p.Piece] = ch.Id;
+            name = ch.Name;
+        }
+        foreach (var (slot, raw) in look.Slots ?? [])
+        {
+            string value = raw.Trim();
+            if (value.Length == 0) continue;
+            (string Key, string Piece)? target = null;
+            if (long.TryParse(value, out long id) && _itemIndex.TryGetValue(id, out var list))
+                target = list.Where(t => t.Key.StartsWith(look.Gender + ":")).Cast<(string, string)?>().FirstOrDefault();
+            else if (value.StartsWith("o:"))
+            {
+                int cut = value.LastIndexOf(':');
+                target = (value[2..cut], value[(cut + 1)..]);
+            }
+            if (target is not { } t || !t.Key.StartsWith(look.Gender + ":") || ByKey(t.Key, look.HighDetail) is not { } entry)
+            {
+                unknown.Add(value);
+                continue;
+            }
+            pieces[t.Piece] = entry.Id;
+            name ??= entry.Name;
+        }
+        var sel = new Selection(look.Gender, look.HighDetail, pieces, look.Base, look.Skinned, look.Pbr)
+            { Name = $"{look.Gender}_{name ?? "Base"}{(look.HighDetail ? "_HD" : "")}" };
+        return (sel, unknown);
     }
 
     static ItemRef? ItemFor(Dictionary<string, ItemMatch> items, string piece)
@@ -188,7 +343,7 @@ public sealed class Library : IDisposable
     public async Task<byte[]> BuildAsync(Selection sel, CancellationToken ct = default)
     {
         string key = string.Join("|", sel.Gender, sel.HighDetail, sel.Base, sel.Skinned, sel.Pbr,
-            string.Join(",", sel.Pieces.OrderBy(p => p.Key).Select(p => p.Key + "=" + p.Value)));
+            string.Join(",", sel.Pieces.OrderBy(p => p.Key).Select(p => p.Key + "=" + p.Value)), sel.Name);
         if (_modelCache.TryGetValue(key, out var cached)) return cached;
         var glb = await WithPartsAsync(sel, (name, parts) =>
             GlbExporter.Build(name, sel.Gender, parts, new ExportOptions { Skinned = sel.Skinned, Pbr = sel.Pbr })
@@ -205,9 +360,9 @@ public sealed class Library : IDisposable
             .OfType<DecodedTexture>().DistinctBy(t => t.Name).ToList(), ct);
 
     /// <summary>Nom de fichier par défaut : la tenue qui fournit le plus de pièces.</summary>
-    public string DefaultName(Selection sel) => sel.Pieces.Count == 0 ? $"{sel.Gender}_Base"
+    public string DefaultName(Selection sel) => sel.Name ?? (sel.Pieces.Count == 0 ? $"{sel.Gender}_Base"
         : $"{sel.Gender}_{Get(sel.Pieces.Values.GroupBy(v => v).OrderByDescending(g => g.Count()).First().Key)?.Name ?? "Tenue"}"
-          + (sel.HighDetail ? "_HD" : "");
+          + (sel.HighDetail ? "_HD" : ""));
 
     async Task<T> WithPartsAsync<T>(Selection sel, Func<string, List<OutfitPart>, T> use, CancellationToken ct)
     {

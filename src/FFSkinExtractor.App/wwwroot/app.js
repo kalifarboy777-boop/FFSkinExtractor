@@ -6,35 +6,37 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 // ---------------------------------------------------------------------------
 // Données et état
 // ---------------------------------------------------------------------------
-const PIECES = [
-  { key: 'Top', label: 'Haut' },
-  { key: 'Bottom', label: 'Bas' },
-  { key: 'Shoe', label: 'Chaussures' },
-  { key: 'Head', label: 'Tête' },
-  { key: 'Hair', label: 'Cheveux' },
-  { key: 'Accessory', label: 'Accessoire' },
-  { key: 'Hands', label: 'Mains' },
-  { key: 'Other', label: 'Autre' },
+// Emplacements du constructeur, dans l'ordre du jeu
+const SLOTS = [
+  { key: 'Hair', label: 'Cheveux', hint: 'Tête, coiffure' },
+  { key: 'Mask', label: 'Masque', hint: 'Lunettes, masque' },
+  { key: 'Facepaint', label: 'Maquillage', hint: 'Pas encore géré', disabled: true },
+  { key: 'Head', label: 'Chapeau', hint: 'Coiffe' },
+  { key: 'Top', label: 'Haut', hint: 'Veste, t-shirt' },
+  { key: 'Bottom', label: 'Bas', hint: 'Pantalon, jupe' },
+  { key: 'Shoe', label: 'Chaussures', hint: 'Chaussures' },
+  { key: 'Hands', label: 'Mains', hint: 'Gants' },
+  { key: 'Other', label: 'Autre', hint: 'Divers' },
 ];
-const pieceLabel = key => PIECES.find(p => p.key === key)?.label ?? key;
 
 const state = {
-  outfits: [],
-  gender: 'Female',
+  catalog: { characters: [], items: [], bundles: [] },
+  gender: 'Male',
   hd: true,
-  category: 'Outfit',          // « Outfit » = tenues complètes, sinon une pièce
-  query: '',
-  pieces: {},                  // pièce → id de tenue
+  character: null,     // clé « Genre:Tenue » ou null pour le personnage de base
+  bundle: null,        // valeur du bundle appliqué (affichage seulement)
+  slots: {},           // emplacement → ID d'objet saisi
   options: { base: true, skinned: true, pbr: true, textures: false },
   status: null,
+  lookups: {},         // ID inconnu des fichiers → infos ItemID2
 };
 
 const $ = id => document.getElementById(id);
 const store = {
-  get(key, fallback) { try { return JSON.parse(localStorage.getItem('ffss.' + key)) ?? fallback; } catch { return fallback; } },
-  set(key, value) { try { localStorage.setItem('ffss.' + key, JSON.stringify(value)); } catch { /* stockage indisponible */ } },
+  get(key, fallback) { try { return JSON.parse(localStorage.getItem('ffss2.' + key)) ?? fallback; } catch { return fallback; } },
+  set(key, value) { try { localStorage.setItem('ffss2.' + key, JSON.stringify(value)); } catch { /* stockage indisponible */ } },
 };
-Object.assign(state, store.get('view', {}));
+Object.assign(state, store.get('look', {}));
 state.options = { ...state.options, ...store.get('options', {}) };
 
 async function api(path, body) {
@@ -58,6 +60,31 @@ function toast(message, error = false) {
   toast.timer = setTimeout(() => t.classList.add('hidden'), error ? 7000 : 3500);
 }
 
+const initials = name => (name ?? '?').split(/[\s_]+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('');
+
+function thumb(iconUrl, fallbackText, cls = 'thumb') {
+  const div = document.createElement('div');
+  div.className = cls;
+  if (iconUrl) {
+    const img = new Image();
+    img.loading = 'lazy';
+    img.alt = '';
+    img.src = iconUrl;
+    img.onerror = () => { img.remove(); div.textContent = fallbackText; };
+    div.append(img);
+  } else div.textContent = fallbackText;
+  return div;
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+// ---------------------------------------------------------------------------
+
 // ---------------------------------------------------------------------------
 // Statut, réglages
 // ---------------------------------------------------------------------------
@@ -74,7 +101,7 @@ async function pollStatus() {
     $('credit').textContent = s.credit;
     renderBatch(s.batch);
     if (s.state !== lastState) {
-      if (s.state === 'Ready') await loadOutfits();
+      if (s.state === 'Ready') await loadCatalog();
       if ((s.state === 'NotConfigured' || s.state === 'Error') && !$('settings').open) openSettings();
       lastState = s.state;
     }
@@ -106,196 +133,308 @@ $('settingsForm').onsubmit = async e => {
     await api('settings', { dataFolder: $('setData').value, gamePackage: $('setPackage').value, exportFolder: $('setExport').value });
     $('settings').close();
     lastState = null;
-    state.outfits = [];
+    state.catalog = { characters: [], items: [], bundles: [] };
     render();
   } catch (err) { toast(err.message, true); }
 };
 $('openFolder').onclick = () => api('open-folder', {}).catch(err => toast(err.message, true));
 
+
 // ---------------------------------------------------------------------------
-// Catalogue
+// Catalogue : personnages, bundles, objets
 // ---------------------------------------------------------------------------
-async function loadOutfits() {
-  state.outfits = await (await api('outfits')).json();
-  // Les pièces mémorisées qui n'existent plus sont retirées
-  for (const [piece, id] of Object.entries(state.pieces))
-    if (!state.outfits.some(o => o.id === id)) delete state.pieces[piece];
+async function loadCatalog() {
+  state.catalog = await (await api('catalog')).json();
+  if (state.character && !state.catalog.characters.some(c => c.key === state.character)) state.character = null;
   render();
   requestModel();
 }
 
-const visibleOutfits = () => state.outfits.filter(o => o.gender === state.gender && o.highDetail === state.hd);
-const byId = id => state.outfits.find(o => o.id === id);
+const characters = () => state.catalog.characters.filter(c => c.gender === state.gender);
+const currentCharacter = () => state.catalog.characters.find(c => c.key === state.character) ?? null;
+const itemsFor = slot => state.catalog.items.filter(i => i.slot === slot && i.gender === state.gender);
+const itemByValue = value => state.catalog.items.find(i => i.value === value && i.gender === state.gender);
+const bundleByValue = value => state.catalog.bundles.find(b => b.value === value);
 
-function matches(o, q) {
-  if (!q) return true;
-  const hay = [o.displayName, o.name, o.bundle, o.character?.name, o.character?.id,
-    ...o.pieces.flatMap(p => [p.item?.name, p.item?.id, ...p.slots])].filter(Boolean).join(' ').toLowerCase();
-  return q.split(/\s+/).every(w => hay.includes(w));
+function look() {
+  return {
+    gender: state.gender, highDetail: state.hd, character: state.character, slots: state.slots,
+    base: state.options.base, skinned: state.options.skinned, pbr: state.options.pbr,
+  };
+}
+
+function save() {
+  store.set('look', { gender: state.gender, hd: state.hd, character: state.character, bundle: state.bundle, slots: state.slots });
+  store.set('options', state.options);
 }
 
 function render() {
   for (const b of $('genderSwitch').children) b.classList.toggle('active', b.dataset.value === state.gender);
   for (const b of $('qualitySwitch').children) b.classList.toggle('active', (b.dataset.value === 'hd') === state.hd);
-  ['optBase', 'optSkinned', 'optPbr', 'optTextures'].forEach(id => {
-    $(id).checked = state.options[id.slice(3).toLowerCase()];
-  });
-  renderCategories();
-  renderCards();
-  renderSlots();
-  store.set('view', { gender: state.gender, hd: state.hd, category: state.category, pieces: state.pieces });
-  store.set('options', state.options);
+  ['optBase', 'optSkinned', 'optPbr', 'optTextures'].forEach(id => { $(id).checked = state.options[id.slice(3).toLowerCase()]; });
+  renderCharacterPicker();
+  renderBundlePicker();
+  renderSlotFields();
+  renderCurrent();
+  save();
 }
 
-function renderCategories() {
-  const all = visibleOutfits();
-  const nav = $('categories');
-  nav.innerHTML = '';
-  const cats = [{ key: 'Outfit', label: 'Tenues', count: all.length },
-    ...PIECES.map(p => ({ ...p, count: all.filter(o => o.pieces.some(x => x.piece === p.key)).length })).filter(p => p.count > 0)];
-  for (const c of cats) {
-    const b = document.createElement('button');
-    b.className = c.key === state.category ? 'active' : '';
-    b.innerHTML = `${c.label}<span class="count">${c.count}</span>`;
-    b.onclick = () => { state.category = c.key; render(); };
-    nav.append(b);
-  }
+// ---- Liste déroulante générique (personnage, bundle, objet) ----
+let openPicker = null;
+function closePickers() {
+  openPicker?.remove();
+  openPicker = null;
+  document.querySelectorAll('.picker.open').forEach(p => p.classList.remove('open'));
 }
-
-function thumb(item, fallbackText) {
-  const div = document.createElement('div');
-  div.className = 'thumb';
-  if (item?.iconUrl) {
-    const img = new Image();
-    img.loading = 'lazy';
-    img.alt = '';
-    img.src = item.iconUrl;
-    img.onerror = () => { img.remove(); div.textContent = fallbackText; };
-    div.append(img);
-  } else div.textContent = fallbackText;
-  return div;
-}
-
-const initials = name => name.split(/[\s_]+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('');
-
-function renderCards() {
-  const q = state.query.trim().toLowerCase();
-  const piece = state.category === 'Outfit' ? null : state.category;
-  let list = visibleOutfits().filter(o => matches(o, q));
-  if (piece) list = list.filter(o => o.pieces.some(p => p.piece === piece));
-  const cards = $('cards');
-  cards.innerHTML = '';
-  $('listInfo').textContent = state.outfits.length === 0
-    ? (state.status?.state === 'Scanning' ? 'Analyse des bundles en cours…' : 'Aucune tenue pour l\'instant.')
-    : `${list.length} ${piece ? 'pièce(s) « ' + pieceLabel(piece) + ' »' : 'tenue(s)'}`;
-
-  for (const o of list) {
-    const p = piece ? o.pieces.find(x => x.piece === piece) : null;
-    const item = piece ? p.item : (o.pieces.find(x => x.piece === 'Top')?.item ?? o.pieces.find(x => x.item)?.item ?? o.character);
-    const selected = piece ? state.pieces[piece] === o.id
-      : o.pieces.every(x => state.pieces[x.piece] === o.id);
-    const card = document.createElement('button');
-    card.className = 'card' + (selected ? ' selected' : '');
-    card.dataset.rarity = item?.rarity ?? '';
-    card.append(thumb(item, initials(o.displayName)));
-    const body = document.createElement('div');
-    body.style.minWidth = '0';
-    const title = piece && p.item ? p.item.name : o.displayName;
-    const sub = piece ? `${o.displayName} · ${o.name}` : `${o.name}${o.character ? ' · ' + o.character.name : ''}`;
-    body.innerHTML = `<div class="title"></div><div class="sub"></div><div class="tags"></div>`;
-    body.querySelector('.title').textContent = title;
-    body.querySelector('.sub').textContent = sub;
-    const tags = body.querySelector('.tags');
-    const addTag = (text, cls = '') => { const t = document.createElement('span'); t.className = 'tag ' + cls; t.textContent = text; tags.append(t); };
-    if (piece) { if (p.item) addTag('ID ' + p.item.id, 'id'); }
-    else {
-      for (const x of o.pieces) addTag(pieceLabel(x.piece));
-      if (item?.id) addTag('ID ' + item.id, 'id');
-    }
-    card.append(body);
-    card.title = piece
-      ? `${pieceLabel(piece)} : ${p.slots.join(', ')}`
-      : o.pieces.map(x => `${pieceLabel(x.piece)}${x.item ? ' — ' + x.item.name + ' (' + x.item.id + ')' : ''}`).join('\n');
-    card.onclick = () => {
-      if (piece) {
-        if (state.pieces[piece] === o.id) delete state.pieces[piece]; else state.pieces[piece] = o.id;
-      } else {
-        state.pieces = {};
-        for (const x of o.pieces) state.pieces[x.piece] = o.id;
-        $('fileName').value = '';
-      }
-      render();
-      requestModel();
-    };
-    cards.append(card);
-  }
-}
-
-function renderSlots() {
-  const box = $('slots');
-  box.innerHTML = '';
-  const shown = PIECES.filter(p => ['Top', 'Bottom', 'Shoe', 'Head', 'Hair'].includes(p.key) || state.pieces[p.key]);
-  for (const p of shown) {
-    const o = byId(state.pieces[p.key]);
-    const pe = o?.pieces.find(x => x.piece === p.key);
-    const row = document.createElement('div');
-    row.className = 'slot' + (o ? '' : ' empty');
-    row.append(thumb(pe?.item, o ? initials(o.displayName) : '—'));
-    const text = document.createElement('div');
-    text.style.minWidth = '0';
-    text.innerHTML = '<div class="label"></div><div class="name"></div>';
-    text.querySelector('.label').textContent = p.label + (pe?.item ? ` · ID ${pe.item.id}` : '');
-    text.querySelector('.name').textContent = o ? (pe?.item?.name ?? o.displayName) : (state.options.base ? 'Corps de base' : 'Rien');
-    row.append(text);
-    if (o) {
-      const x = document.createElement('button');
-      x.textContent = '×'; x.title = 'Retirer';
-      x.onclick = () => { delete state.pieces[p.key]; render(); requestModel(); };
-      row.append(x);
-    } else row.append(document.createElement('span'));
-    row.onclick = e => { if (e.target.tagName !== 'BUTTON') { state.category = p.key; render(); } };
-    box.append(row);
-  }
-  const name = defaultName();
-  $('fileName').placeholder = name;
-}
-
-function defaultName() {
-  const ids = Object.values(state.pieces);
-  if (ids.length === 0) return `${state.gender}_Base`;
-  const counts = {};
-  ids.forEach(id => counts[id] = (counts[id] ?? 0) + 1);
-  const main = byId(Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0]);
-  return `${state.gender}_${main?.name ?? 'Tenue'}${state.hd ? '_HD' : ''}`;
-}
-
-const selection = () => ({
-  gender: state.gender, highDetail: state.hd, pieces: state.pieces,
-  base: state.options.base, skinned: state.options.skinned, pbr: state.options.pbr,
+document.addEventListener('mousedown', e => {
+  if (openPicker && !openPicker.contains(e.target) && !e.target.closest('.picker > .choice') && !e.target.closest('.field-row input')) closePickers();
 });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closePickers(); });
 
-// Changement de qualité : on garde les mêmes tenues dans l'autre qualité quand elles existent
-function switchQuality(hd) {
-  if (hd === state.hd) return;
-  const mapped = {};
-  for (const [piece, id] of Object.entries(state.pieces)) {
-    const o = byId(id);
-    const twin = o && state.outfits.find(x => x.highDetail === hd && x.gender === o.gender && x.name === o.name && x.bundle === o.bundle);
-    if (twin && twin.pieces.some(x => x.piece === piece)) mapped[piece] = twin.id;
+/**
+ * Ouvre une liste sous <host>. options : [{ value, title, sub, icon, rarity, tag, missing }]
+ * tabs : [{ key, label, filter }] facultatif.
+ */
+function showPopover(host, { options, selected, onPick, placeholder, tabs, search = true, query = null }) {
+  closePickers();
+  host.classList.add('open');
+  const pop = el('div', 'popover');
+  let input = null, tab = tabs?.[0]?.key;
+  if (search && query === null) {
+    input = el('input');
+    input.type = 'search';
+    input.placeholder = placeholder ?? 'Rechercher…';
+    pop.append(input);
   }
-  state.hd = hd;
-  state.pieces = mapped;
+  let tabBar = null;
+  if (tabs) {
+    tabBar = el('div', 'tabs');
+    pop.append(tabBar);
+  }
+  const list = el('div', 'options');
+  pop.append(list);
+  const draw = (q = '') => {
+    if (tabBar) {
+      tabBar.innerHTML = '';
+      for (const t of tabs) {
+        const b = el('button', t.key === tab ? 'active' : '', `${t.label} (${options.filter(t.filter).length})`);
+        b.type = 'button';
+        b.onclick = () => { tab = t.key; draw(input?.value ?? q); };
+        tabBar.append(b);
+      }
+    }
+    const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    let shown = options.filter(o => !tabs || tabs.find(t => t.key === tab).filter(o))
+      .filter(o => words.every(w => `${o.title} ${o.sub ?? ''} ${o.value}`.toLowerCase().includes(w)));
+    const total = shown.length;
+    shown = shown.slice(0, 200);
+    list.innerHTML = '';
+    if (shown.length === 0) list.append(el('div', 'empty-note', 'Aucun résultat.'));
+    for (const o of shown) {
+      const b = el('button', 'option' + (o.value === selected ? ' selected' : '') + (o.missing ? ' missing' : ''));
+      b.type = 'button';
+      if (o.rarity) b.dataset.rarity = o.rarity;
+      b.append(thumb(o.icon, initials(o.title)));
+      const body = el('div');
+      body.style.minWidth = '0';
+      const t = el('div', 'title', o.title);
+      if (o.tag) t.append(el('span', 'tag' + (o.tagClass ? ' ' + o.tagClass : ''), o.tag));
+      body.append(t);
+      if (o.sub) body.append(el('div', 'sub', o.sub));
+      b.append(body);
+      b.onmousedown = e => e.preventDefault();
+      b.onclick = () => { closePickers(); onPick(o); };
+      list.append(b);
+    }
+    if (total > shown.length) list.append(el('div', 'empty-note', `${total - shown.length} autres : affine la recherche.`));
+  };
+  draw(query ?? '');
+  if (input) input.oninput = () => draw(input.value);
+  host.append(pop);
+  openPicker = pop;
+  input?.focus();
+  return { redraw: draw };
+}
+
+// ---- Personnage ----
+function renderCharacterPicker() {
+  const host = $('characterPicker');
+  host.innerHTML = '';
+  const c = currentCharacter();
+  const btn = el('button', 'choice');
+  btn.type = 'button';
+  btn.append(thumb(c?.item?.iconUrl, c ? initials(c.name) : (state.gender === 'Male' ? 'A' : 'E')));
+  const body = el('div');
+  body.style.minWidth = '0';
+  body.append(el('div', 'title', c ? c.name : 'Personnage de base'));
+  body.append(el('div', 'sub', c ? `${c.internal}${c.item ? ' · ID ' + c.item.id : ''}` : (state.gender === 'Male' ? 'Adam, tenue de départ' : 'Eve, tenue de départ')));
+  btn.append(body, el('span', 'chev', '▾'));
+  btn.onclick = () => {
+    if (host.classList.contains('open')) return closePickers();
+    const options = [{ value: '', title: 'Personnage de base', sub: state.gender === 'Male' ? 'Adam' : 'Eve' },
+      ...characters().map(x => ({
+        value: x.key, title: x.name, sub: x.internal + (x.item ? ' · ID ' + x.item.id : ''),
+        icon: x.item?.iconUrl, rarity: x.item?.rarity, tag: /awakening/i.test(x.internal) ? 'Éveillé' : null,
+      }))];
+    showPopover(host, {
+      options, selected: state.character ?? '', placeholder: 'Rechercher un personnage…',
+      onPick: o => { state.character = o.value || null; render(); requestModel(); },
+    });
+  };
+  host.append(btn);
+}
+
+// ---- Bundle ----
+function renderBundlePicker() {
+  const host = $('bundlePicker');
+  host.innerHTML = '';
+  const b = state.bundle ? bundleByValue(state.bundle) : null;
+  const btn = el('button', 'choice');
+  btn.type = 'button';
+  if (b?.rarity) btn.dataset.rarity = b.rarity;
+  btn.append(thumb(b?.iconUrl, b ? initials(b.name) : '+'));
+  const body = el('div');
+  body.style.minWidth = '0';
+  body.append(el('div', 'title', b ? b.name : 'Choisir un bundle'));
+  const available = state.catalog.bundles.filter(x => x.available && x.gender === state.gender).length;
+  body.append(el('div', 'sub', b ? (b.id ? 'ID ' + b.id : b.outfit ?? '') : `${available} bundles disponibles dans tes fichiers`));
+  btn.append(body, el('span', 'chev', '▾'));
+  btn.onclick = () => {
+    if (host.classList.contains('open')) return closePickers();
+    const options = state.catalog.bundles
+      .filter(x => x.available ? x.gender === state.gender : (x.gender == null || x.gender === state.gender))
+      .map(x => ({
+        value: x.value, title: x.name, icon: x.iconUrl, rarity: x.rarity, missing: !x.available,
+        sub: x.available ? `${x.id ? 'ID ' + x.id + ' · ' : ''}${Object.keys(x.slots).map(slotLabel).join(', ')}`
+          : `ID ${x.id} · pas dans tes fichiers : ouvre-le dans le jeu pour le télécharger`,
+        available: x.available,
+      }));
+    showPopover(host, {
+      options, selected: state.bundle, placeholder: 'Nom ou ID du bundle…',
+      tabs: [{ key: 'ok', label: 'Disponibles', filter: o => o.available }, { key: 'all', label: 'Tous (ItemID2)', filter: () => true }],
+      onPick: o => applyBundle(o.value),
+    });
+  };
+  host.append(btn);
+}
+
+function applyBundle(value) {
+  const b = bundleByValue(value);
+  if (!b) return;
+  if (!b.available) { toast(`« ${b.name} » n'est pas dans tes fichiers. Ouvre-le dans la boutique du jeu pour qu'il soit téléchargé, puis relance l'analyse.`, true); return; }
+  state.bundle = value;
+  state.slots = { ...b.slots };
+  $('fileName').value = '';
   render();
   requestModel();
 }
 
+const slotLabel = key => SLOTS.find(s => s.key === key)?.label ?? key;
+
+// ---- Emplacements (ID d'objet) ----
+function renderSlotFields() {
+  const box = $('slotFields');
+  box.innerHTML = '';
+  const used = new Set(state.catalog.items.filter(i => i.gender === state.gender).map(i => i.slot));
+  for (const s of SLOTS) {
+    if (!s.disabled && !used.has(s.key) && !state.slots[s.key] && !['Hair', 'Mask', 'Top', 'Bottom', 'Shoe'].includes(s.key)) continue;
+    const row = el('div', 'field-row' + (s.disabled ? ' disabled' : ''));
+    const value = state.slots[s.key] ?? '';
+    const item = value ? itemByValue(value) : null;
+    row.append(thumb(item?.iconUrl, s.label.slice(0, 2)));
+    const lbl = el('div', 'lbl');
+    lbl.append(el('strong', '', s.label), el('span', '', s.disabled ? s.hint : 'ID d\'objet'));
+    row.append(lbl);
+    const input = el('input');
+    input.value = value.startsWith('o:') ? '' : value;
+    input.placeholder = s.disabled ? 'Bientôt' : (value.startsWith('o:') ? item?.name ?? '' : 'ex. 203000528 ou un nom');
+    input.disabled = !!s.disabled;
+    input.spellcheck = false;
+    row.append(input);
+    const st = el('div', 'state');
+    row.append(st);
+    describeSlot(s.key, value, st);
+
+    const suggest = () => {
+      const opts = itemsFor(s.key).map(i => ({
+        value: i.value, title: i.name, icon: i.iconUrl, rarity: i.rarity,
+        sub: (i.id ? 'ID ' + i.id + ' · ' : '') + i.outfit,
+      }));
+      showPopover(row, {
+        options: opts, selected: state.slots[s.key], query: input.value,
+        onPick: o => setSlot(s.key, o.value),
+      });
+    };
+    input.onfocus = suggest;
+    input.oninput = () => { if (openPicker && row.contains(openPicker)) { closePickers(); } suggest(); };
+    input.onkeydown = e => { if (e.key === 'Enter') { setSlot(s.key, input.value.trim()); closePickers(); input.blur(); } };
+    input.onchange = () => {
+      const v = input.value.trim();
+      if (/^\d+$/.test(v) || v === '') setSlot(s.key, v);
+    };
+    box.append(row);
+  }
+}
+
+function setSlot(slot, value) {
+  if (value) state.slots[slot] = value; else delete state.slots[slot];
+  state.bundle = null;
+  render();
+  requestModel();
+}
+
+// État d'un emplacement : objet trouvé, objet connu mais absent des fichiers, ou ID inconnu
+async function describeSlot(slot, value, st) {
+  if (!value) { st.textContent = currentCharacter() ? 'Pièce d\'origine du personnage' : 'Pièce de base'; st.className = 'state'; return; }
+  const item = itemByValue(value);
+  if (item) {
+    st.textContent = `✓ ${item.name} · ${item.outfit}`;
+    st.className = 'state ok';
+    if (item.slot !== slot) st.textContent += ` (va dans « ${slotLabel(item.slot)} »)`;
+    return;
+  }
+  if (!/^\d+$/.test(value)) { st.textContent = 'Saisis un ID d\'objet (chiffres).'; st.className = 'state bad'; return; }
+  let info = state.lookups[value];
+  if (info === undefined) {
+    try { info = await (await api('lookup/' + value)).json(); } catch { info = null; }
+    state.lookups[value] = info;
+  }
+  if (info) { st.textContent = `${info.name} : pas dans tes fichiers (ouvre-le dans le jeu pour le télécharger)`; st.className = 'state warn'; }
+  else { st.textContent = 'ID inconnu dans ItemID2.'; st.className = 'state bad'; }
+}
+
+function renderCurrent() {
+  const box = $('current');
+  box.innerHTML = '';
+  const c = currentCharacter();
+  const b = state.bundle ? bundleByValue(state.bundle) : null;
+  box.append(el('div', 'who', c ? c.name : 'Personnage de base'));
+  const n = Object.keys(state.slots).length;
+  box.append(el('div', 'what', b ? b.name : n ? `${n} objet(s) choisi(s)` : 'Tenue d\'origine'));
+  $('fileName').placeholder = defaultName();
+  const count = state.catalog.bundles.filter(x => x.available && x.gender === state.gender).length;
+  $('exportAll').textContent = `Exporter tous les bundles (${count})`;
+}
+
+function defaultName() {
+  const c = currentCharacter();
+  const b = state.bundle ? bundleByValue(state.bundle) : null;
+  const who = c ? c.internal : `${state.gender}_Base`;
+  const what = b ? '_' + b.name.replace(/[^\w]+/g, '_').replace(/_+$/, '') : Object.keys(state.slots).length ? '_Custom' : '';
+  return `${who}${what}${state.hd ? '_HD' : ''}`;
+}
+
 for (const b of $('genderSwitch').children)
-  b.onclick = () => { if (state.gender !== b.dataset.value) { state.gender = b.dataset.value; state.pieces = {}; render(); requestModel(); } };
-for (const b of $('qualitySwitch').children) b.onclick = () => switchQuality(b.dataset.value === 'hd');
-$('search').oninput = e => { state.query = e.target.value; renderCards(); };
-$('clearAll').onclick = () => { state.pieces = {}; render(); requestModel(); };
+  b.onclick = () => {
+    if (state.gender === b.dataset.value) return;
+    state.gender = b.dataset.value; state.character = null; state.bundle = null; state.slots = {};
+    render(); requestModel();
+  };
+for (const b of $('qualitySwitch').children)
+  b.onclick = () => { const hd = b.dataset.value === 'hd'; if (hd !== state.hd) { state.hd = hd; render(); requestModel(); } };
+$('clearAll').onclick = () => { state.slots = {}; state.bundle = null; render(); requestModel(); };
 for (const [id, key] of [['optBase', 'base'], ['optSkinned', 'skinned'], ['optPbr', 'pbr'], ['optTextures', 'textures']])
-  $(id).onchange = e => { state.options[key] = e.target.checked; render(); if (key !== 'textures') requestModel(); };
+  $(id).onchange = e => { state.options[key] = e.target.checked; save(); if (key !== 'textures') requestModel(); };
 
 // ---------------------------------------------------------------------------
 // Aperçu 3D
@@ -398,7 +537,7 @@ function requestModel() {
 
 async function loadModel() {
   if (state.status?.state !== 'Ready') return;
-  const empty = Object.keys(state.pieces).length === 0;
+  const empty = !state.character && Object.keys(state.slots).length === 0;
   $('empty').classList.toggle('hidden', !(empty && !state.status.baseReady));
   if (empty && !state.status.baseReady) {
     if (model) { scene.remove(model); model = null; }
@@ -411,7 +550,7 @@ async function loadModel() {
   $('loading').classList.remove('hidden');
   try {
     const res = await fetch('api/model', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(selection()), signal: ctrl.signal,
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(look()), signal: ctrl.signal,
     });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? res.statusText);
     const buf = await res.arrayBuffer();
@@ -442,6 +581,7 @@ $('toolShot').onclick = () => {
   a.click();
 };
 
+
 // ---------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------
@@ -459,21 +599,22 @@ async function busy(button, work) {
 }
 
 $('download').onclick = () => busy($('download'), async () => {
-  const blob = await (await api('model', selection())).blob();
+  const blob = await (await api('model', look())).blob();
   saveBlob(blob, ($('fileName').value || defaultName()) + '.glb');
 });
 $('saveExport').onclick = () => busy($('saveExport'), async () => {
-  const r = await (await api('export', { selection: selection(), fileName: $('fileName').value || null, textures: state.options.textures })).json();
+  const r = await (await api('export', { look: look(), fileName: $('fileName').value || null, textures: state.options.textures })).json();
   toast('Enregistré : ' + r.path);
 });
 $('downloadTextures').onclick = () => busy($('downloadTextures'), async () => {
-  const blob = await (await api('textures', selection())).blob();
+  const blob = await (await api('textures', look())).blob();
   saveBlob(blob, ($('fileName').value || defaultName()) + '_textures.zip');
 });
 $('exportAll').onclick = () => busy($('exportAll'), async () => {
-  const n = visibleOutfits().length;
-  if (!confirm(`Exporter les ${n} tenues ${state.gender === 'Female' ? 'femme' : 'homme'} (${state.hd ? 'HD' : 'en jeu'}) dans le dossier d'export ?`)) return;
-  await api('export-all', { highDetail: state.hd, gender: state.gender, base: state.options.base });
+  const n = state.catalog.bundles.filter(x => x.available && x.gender === state.gender).length;
+  const who = currentCharacter()?.name ?? 'le personnage de base';
+  if (!confirm(`Exporter les ${n} bundles disponibles portés par ${who} (${state.hd ? 'HD' : 'en jeu'}) dans le dossier d'export ?`)) return;
+  await api('export-all', { highDetail: state.hd, gender: state.gender, character: state.character, base: state.options.base });
   setTimeout(pollStatus, 300);
 });
 $('batchCancel').onclick = () => api('export-all/cancel', {});

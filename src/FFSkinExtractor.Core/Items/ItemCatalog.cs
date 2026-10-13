@@ -27,7 +27,12 @@ public sealed class ItemCatalog
     readonly Dictionary<long, GameItem> _byId = [];
     readonly List<(GameItem Item, HashSet<string> Tokens)> _indexed = [];
 
+    readonly List<(GameItem Item, HashSet<string> Tokens)> _bundles = [];
+
     public IReadOnlyCollection<GameItem> Items => _byId.Values;
+
+    /// <summary>Bundles de la boutique (ensembles de vêtements), avec leur icône.</summary>
+    public IEnumerable<GameItem> Bundles => _bundles.Select(b => b.Item);
 
     // Mots des icônes qui ne disent rien de la tenue
     static readonly HashSet<string> IconNoise = new(StringComparer.Ordinal)
@@ -48,10 +53,19 @@ public sealed class ItemCatalog
         var catalog = new ItemCatalog();
         foreach (var r in raw)
         {
-            if (r.ItemType is not ("CLOTHES" or "AVATAR") || !long.TryParse(r.ItemId, out long id)) continue;
+            if (r.ItemType is not ("CLOTHES" or "AVATAR" or "BUNDLE") || !long.TryParse(r.ItemId, out long id)) continue;
             if (string.IsNullOrEmpty(r.Icon) || r.Icon == "NONE") continue;
             var tokens = Tokens(r.Icon);
             string? gender = tokens.Contains("female") ? "Female" : tokens.Contains("male") ? "Male" : null;
+            if (r.ItemType == "BUNDLE")
+            {
+                // Les caisses génériques (« Icon_box_3 ») ne disent rien de leur contenu
+                if (r.Description is null or "NONE" || tokens.Contains("box")) continue;
+                var bundle = new GameItem(id, r.Description, r.Icon, r.Rare ?? "NONE", "BUNDLE", "Bundle", gender);
+                catalog._byId[id] = bundle;
+                catalog._bundles.Add((bundle, BundleTokens(tokens)));
+                continue;
+            }
             var item = new GameItem(id, r.Description is null or "NONE" ? r.Icon : r.Description, r.Icon,
                 r.Rare ?? "NONE", r.ItemType, PieceOf(id, tokens), gender);
             catalog._byId[id] = item;
@@ -121,6 +135,48 @@ public sealed class ItemCatalog
     public Dictionary<string, ItemMatch> BestPerPiece(string gender, string outfitName) =>
         Match(gender, outfitName).Where(m => m.Score > 0)
             .GroupBy(m => m.Item.Piece).ToDictionary(g => g.Key, g => g.First());
+
+    /// <summary>
+    /// Bundle de la boutique qui contient une tenue : par l'icône (« Icon_bundle_male_Cobra_Red_26 » pour
+    /// « Cos_Cobra_Red », « FF_Icon_sc_hitmanPackage » pour « Sc_Hitman ») ou par le nom
+    /// (« Aurora Calling Bundle » pour la tenue « Aurora Calling »).
+    /// </summary>
+    public ItemMatch? BundleFor(string gender, string outfitName, string? displayName = null)
+    {
+        var words = Tokens(outfitName);
+        var key = words.Where(w => !WeakWords.Contains(w)).ToList();
+        string? title = displayName?.Trim().ToLowerInvariant();
+        ItemMatch? best = null;
+        foreach (var (item, tokens) in _bundles)
+        {
+            if (item.Gender != null && !item.Gender.Equals(gender, StringComparison.OrdinalIgnoreCase)) continue;
+            int score;
+            string name = item.Name.ToLowerInvariant();
+            if (title != null && title.Length > 2 && (name == title + " bundle" || name == title))
+                score = 30;
+            else if (key.Count > 0 && key.All(tokens.Contains))
+            {
+                int extra = tokens.Count(t => !words.Contains(t));
+                score = 10 * key.Count + words.Count(w => WeakWords.Contains(w) && tokens.Contains(w)) - 4 * extra;
+            }
+            else continue;
+            if (score > 0 && (best == null || score > best.Score || (score == best.Score && item.Id < best.Item.Id)))
+                best = new ItemMatch(item, score);
+        }
+        return best;
+    }
+
+    // Mots d'icône de bundle sans rapport avec la tenue ; « hitmanPackage » → « hitman »
+    static HashSet<string> BundleTokens(HashSet<string> tokens)
+    {
+        var result = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var t in tokens)
+        {
+            if (t is "icon" or "ff" or "bundle" or "male" or "female" or "ui" || t.All(char.IsDigit)) continue;
+            result.Add(t.EndsWith("package") && t.Length > 7 ? t[..^7] : t);
+        }
+        return result;
+    }
 
     static bool SamePiece(string itemPiece, string partPiece) =>
         itemPiece == partPiece

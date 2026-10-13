@@ -9,8 +9,9 @@ un format compressé propre au jeu, qu'AssetStudio ne sait pas lire. Ce projet d
 
 ## Fonctionnalités
 
-- **Appli avec aperçu 3D** : catalogue des tenues avec icônes, noms officiels et ID d'objets, choix pièce par pièce
-  (haut, bas, chaussures, tête, cheveux, accessoire), recherche par nom ou par ID, export d'une tenue ou de toutes.
+- **Appli avec aperçu 3D**, comme REGO Skin Studio : on choisit un personnage (Rafael, Kelly, Alok éveillé…),
+  puis un bundle de la boutique ou des ID d'objets par emplacement (cheveux, masque, haut, bas, chaussures).
+  Export d'un look ou de tous les bundles d'un coup.
 - **Squelette et poids** : armature complète (52 os femme, 55 homme) et os de tissu ou de cheveux propres à
   chaque vêtement. Le modèle se pose et s'anime directement dans Blender.
 - **Corps de base** : peau, visage, cheveux et tenue de départ du jeu, remplacés par les pièces choisies.
@@ -34,11 +35,14 @@ Mets dans un même dossier (par exemple `Documents\FFdata`) :
 Lance `FFSkinStudio.exe`. Une page s'ouvre dans le navigateur (`http://127.0.0.1:5178`). Au premier lancement,
 indique le dossier des données dans **Réglages** : l'analyse prend quelques secondes.
 
-- À gauche : clique sur une tenue pour l'essayer, ou utilise les onglets Haut, Bas, Chaussures… pour composer.
+- À gauche, **Personnage** : le personnage de base ou un personnage du jeu, choisi tel quel (visage, coiffure,
+  tenue d'origine). **Bundle** : un bundle de la boutique (liste ItemID2, type BUNDLE) remplit tous ses emplacements ;
+  les bundles absents de tes fichiers sont listés à part. **Skin builder** : un ID d'objet par emplacement
+  (ex. `203000528`), ou une recherche par nom ; chaque ID remplace la pièce du personnage.
 - Au centre : fais tourner avec la souris, molette pour zoomer ; boutons pour recadrer, rotation automatique,
   fil de fer, squelette, fond clair et capture PNG.
 - À droite : pièces portées, options (corps de base, squelette, PBR, textures PNG), téléchargement du `.glb`,
-  export dans le dossier `Documents\FFSkinStudio`, et export de toutes les tenues en une fois.
+  export dans le dossier `Documents\FFSkinStudio`, et export de tous les bundles portés par le personnage choisi.
 
 Options : `FFSkinStudio.exe [dossier des données] [--port 5178] [--no-browser]`. Les réglages sont gardés dans
 `%APPDATA%\FFSkinStudio`, avec une copie locale de la base ItemID2 (rafraîchie chaque semaine).

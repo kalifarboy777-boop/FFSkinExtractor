@@ -68,26 +68,50 @@ app.MapPost("/api/settings", (AppSettings s) =>
 
 app.MapGet("/api/outfits", () => library.Outfits);
 
-app.MapPost("/api/model", async (Selection sel, CancellationToken ct) =>
+app.MapGet("/api/catalog", () => new
 {
-    try { return Results.File(await library.BuildAsync(sel, ct), "model/gltf-binary"); }
+    characters = library.Characters,
+    items = library.SlotItems,
+    bundles = library.Bundles,
+});
+
+// Objet du catalogue ItemID2, même s'il n'est pas dans les fichiers téléchargés
+app.MapGet("/api/lookup/{id:long}", (long id) => library.Catalog?.Get(id) is { } i
+    ? Results.Ok(new { i.Id, i.Name, i.Rarity, i.IconUrl, i.Piece, i.Type })
+    : Results.NotFound());
+
+app.MapPost("/api/model", async (Look look, CancellationToken ct) =>
+{
+    try
+    {
+        var (sel, unknown) = library.Resolve(look);
+        var glb = await library.BuildAsync(sel, ct);
+        return Results.File(glb, "model/gltf-binary", sel.Name + ".glb");
+    }
     catch (Exception e) when (e is not OperationCanceledException) { return Results.Problem(e.Message); }
+});
+
+app.MapPost("/api/resolve", (Look look) =>
+{
+    var (sel, unknown) = library.Resolve(look);
+    return new { name = library.DefaultName(sel), unknown };
 });
 
 app.MapPost("/api/export", async (ExportRequest req, CancellationToken ct) =>
 {
     try
     {
-        var glb = await library.BuildAsync(req.Selection, ct);
+        var (selection, _) = library.Resolve(req.Look);
+        var glb = await library.BuildAsync(selection, ct);
         string dir = library.Settings.ExportFolder;
         Directory.CreateDirectory(dir);
-        string path = Path.Combine(dir, SafeName(req.FileName ?? library.DefaultName(req.Selection)) + ".glb");
+        string path = Path.Combine(dir, SafeName(req.FileName ?? library.DefaultName(selection)) + ".glb");
         await File.WriteAllBytesAsync(path, glb, ct);
         if (req.Textures)
         {
             string texDir = Path.ChangeExtension(path, null) + "_textures";
             Directory.CreateDirectory(texDir);
-            foreach (var t in await library.TexturesAsync(req.Selection, ct))
+            foreach (var t in await library.TexturesAsync(selection, ct))
                 await File.WriteAllBytesAsync(Path.Combine(texDir, SafeName(t.Name) + ".png"), t.Png, ct);
         }
         return Results.Ok(new { path });
@@ -95,8 +119,9 @@ app.MapPost("/api/export", async (ExportRequest req, CancellationToken ct) =>
     catch (Exception e) when (e is not OperationCanceledException) { return Results.Problem(e.Message); }
 });
 
-app.MapPost("/api/textures", async (Selection sel, CancellationToken ct) =>
+app.MapPost("/api/textures", async (Look look, CancellationToken ct) =>
 {
+    var (sel, _) = library.Resolve(look);
     var mem = new MemoryStream();
     using (var zip = new ZipArchive(mem, ZipArchiveMode.Create, true))
         foreach (var t in await library.TexturesAsync(sel, ct))
@@ -109,24 +134,28 @@ app.MapPost("/api/textures", async (Selection sel, CancellationToken ct) =>
 
 app.MapPost("/api/export-all", (BatchRequest req) =>
 {
-    var list = library.Outfits.Where(o => o.HighDetail == req.HighDetail && (req.Gender == null || o.Gender == req.Gender)).ToList();
+    // Chaque bundle disponible, porté par le personnage choisi
+    var list = library.Bundles.Where(b => b.Available && b.Gender == req.Gender).ToList();
     if (!batch.TryStart(list.Count)) return Results.Conflict("Un export est déjà en cours.");
-    string dir = Path.Combine(library.Settings.ExportFolder, req.HighDetail ? "Toutes_HD" : "Toutes_en_jeu");
+    string who = req.Character is { Length: > 0 } ck ? library.Characters.FirstOrDefault(c => c.Key == ck)?.Internal ?? "Base" : "Base";
+    string dir = Path.Combine(library.Settings.ExportFolder, $"Bundles_{req.Gender}_{who}{(req.HighDetail ? "_HD" : "")}");
     _ = Task.Run(async () =>
     {
         try
         {
             Directory.CreateDirectory(dir);
-            foreach (var o in list)
+            foreach (var b in list)
             {
                 if (batch.Cancelled) break;
-                batch.Current = o.DisplayName;
+                batch.Current = b.Name;
                 try
                 {
-                    var glb = await library.BuildAsync(Library.Full(o, req.Base));
-                    await File.WriteAllBytesAsync(Path.Combine(dir, SafeName($"{o.Gender}_{o.Name}{(o.HighDetail ? "_HD" : "")}") + ".glb"), glb);
+                    var (sel, _) = library.Resolve(new Look(req.Gender, req.HighDetail, req.Character, b.Slots, req.Base));
+                    var glb = await library.BuildAsync(sel);
+                    string file = (b.Id is { } id ? $"{id}_" : "") + b.Name;
+                    await File.WriteAllBytesAsync(Path.Combine(dir, SafeName(file) + ".glb"), glb);
                 }
-                catch (Exception e) { batch.Errors.Add($"{o.Name} : {e.Message}"); }
+                catch (Exception e) { batch.Errors.Add($"{b.Name} : {e.Message}"); }
                 batch.Done++;
             }
         }
@@ -195,8 +224,8 @@ static void OpenShell(string target)
     catch (Exception) { /* pas de navigateur ou d'explorateur : l'adresse est affichée dans la console */ }
 }
 
-record ExportRequest(Selection Selection, string? FileName, bool Textures = false);
-record BatchRequest(bool HighDetail = true, string? Gender = null, bool Base = true);
+record ExportRequest(Look Look, string? FileName, bool Textures = false);
+record BatchRequest(string Gender, bool HighDetail = true, string? Character = null, bool Base = true);
 
 /// <summary>Export de toutes les tenues, suivi par l'interface.</summary>
 sealed class BatchJob

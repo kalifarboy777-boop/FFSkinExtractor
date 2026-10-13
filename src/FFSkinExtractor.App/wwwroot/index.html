@@ -32,24 +32,40 @@
 
   <main class="layout">
     <!-- Catalogue -->
-    <aside class="panel browser">
+    <aside class="panel builder">
       <div class="toolbar-row">
         <div class="segmented" id="genderSwitch">
-          <button data-value="Female" class="active">Femme</button>
           <button data-value="Male">Homme</button>
+          <button data-value="Female">Femme</button>
         </div>
         <div class="segmented" id="qualitySwitch">
           <button data-value="hd" class="active" title="Modèles du lobby, plus détaillés">HD</button>
           <button data-value="lo" title="Modèles utilisés en partie">En jeu</button>
         </div>
       </div>
-      <div class="search">
-        <svg viewBox="0 0 24 24" width="16" height="16"><path d="M10 2a8 8 0 0 1 6.32 12.9l5.39 5.4-1.41 1.4-5.4-5.38A8 8 0 1 1 10 2zm0 2a6 6 0 1 0 0 12 6 6 0 0 0 0-12z" fill="currentColor"/></svg>
-        <input id="search" type="search" placeholder="Nom, personnage ou ID d'objet…" autocomplete="off">
-      </div>
-      <nav class="chips" id="categories"></nav>
-      <div class="list-info muted" id="listInfo"></div>
-      <div class="cards" id="cards"></div>
+
+      <section>
+        <div class="section-title">Personnage</div>
+        <div class="picker" id="characterPicker"></div>
+        <p class="hint">Choisis un personnage normal ou éveillé : il garde son visage et sa coiffure, et sa tenue d'origine sert de départ. Un ID saisi plus bas remplace l'emplacement.</p>
+      </section>
+
+      <section>
+        <div class="section-title">Bundle</div>
+        <div class="picker" id="bundlePicker"></div>
+        <p class="hint">Un bundle remplit tous ses emplacements d'un coup. Liste et ID : ItemID2, type BUNDLE.</p>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <div>
+            <div class="section-title">Skin builder</div>
+            <p class="hint">Entre un ID d'objet (ou cherche par nom) pour chaque pièce voulue. Laisse vide pour garder celle du personnage.</p>
+          </div>
+          <button class="ghost small" id="clearAll">Vider les champs</button>
+        </div>
+        <div class="slot-fields" id="slotFields"></div>
+      </section>
     </aside>
 
     <!-- Aperçu 3D -->
@@ -66,7 +82,7 @@
       <div class="viewer-stats muted" id="stats"></div>
       <div class="viewer-empty" id="empty">
         <h2>Choisis une tenue</h2>
-        <p>Clique sur une tenue à gauche pour l'essayer, ou choisis pièce par pièce avec les onglets Haut, Bas, Chaussures…</p>
+        <p>Choisis un personnage, puis un bundle ou des ID d'objets à gauche.</p>
       </div>
       <div class="viewer-loading hidden" id="loading"><div class="spinner"></div><span id="loadingText">Assemblage du modèle…</span></div>
       <div class="toast hidden" id="toast"></div>
@@ -74,9 +90,7 @@
 
     <!-- Tenue en cours et export -->
     <aside class="panel outfit">
-      <h3>Ta tenue</h3>
-      <div class="slots" id="slots"></div>
-      <button class="ghost small" id="clearAll">Tout retirer</button>
+      <div class="current" id="current"></div>
 
       <h3>Options</h3>
       <label class="check"><input type="checkbox" id="optBase" checked> Corps de base (peau, visage, cheveux)</label>
@@ -95,8 +109,8 @@
       </div>
 
       <h3>Export en lot</h3>
-      <p class="muted small-text">Exporte chaque tenue complète du genre et de la qualité affichés.</p>
-      <button class="ghost" id="exportAll">Exporter toutes les tenues</button>
+      <p class="muted small-text">Exporte chaque bundle disponible porté par le personnage choisi, un fichier par bundle (nommé avec son ID).</p>
+      <button class="ghost" id="exportAll">Exporter tous les bundles</button>
       <div class="batch hidden" id="batch">
         <div class="progress big"><div></div></div>
         <div class="muted small-text" id="batchText"></div>
