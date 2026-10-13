@@ -1,6 +1,7 @@
 using AssetRipper.TextureDecoder.Astc;
 using AssetRipper.TextureDecoder.Etc;
 using AssetRipper.TextureDecoder.Rgb.Formats;
+using System.Buffers.Binary;
 using AssetsTools.NET;
 
 namespace FFSkinExtractor.Core;
@@ -25,6 +26,32 @@ public static class TextureDecoder
         byte[] bgra = DecodeToBgra(data!, w, h, format, name);
         // Unity stocke les lignes de bas en haut
         return new DecodedTexture(name, w, h, PngWriter.Encode(bgra, w, h, flipY: true));
+    }
+
+    /// <summary>
+    /// Décode une Texture2D à partir de ses octets bruts, sans typetree :
+    /// m_Name, m_ForcedFallbackFormat, 2 booléens alignés, largeur, hauteur, taille, mipsStripped, format…
+    /// puis l'image, précédée de sa taille.
+    /// </summary>
+    public static DecodedTexture? DecodeRaw(byte[] raw)
+    {
+        var r = raw.AsSpan();
+        int len = BinaryPrimitives.ReadInt32LittleEndian(r);
+        string name = System.Text.Encoding.UTF8.GetString(r.Slice(4, len));
+        int p = (4 + len + 3) & ~3;
+        p += 4 + 4;
+        int w = BinaryPrimitives.ReadInt32LittleEndian(r[p..]);
+        int h = BinaryPrimitives.ReadInt32LittleEndian(r[(p + 4)..]);
+        int size = BinaryPrimitives.ReadInt32LittleEndian(r[(p + 8)..]);
+        int format = BinaryPrimitives.ReadInt32LittleEndian(r[(p + 16)..]);
+        if (w <= 0 || h <= 0 || size <= 0 || size > raw.Length) return null;
+        for (int q = p + 20; q + 4 + size <= raw.Length; q += 4)
+        {
+            if (BinaryPrimitives.ReadInt32LittleEndian(r[q..]) != size) continue;
+            var bgra = DecodeToBgra(r.Slice(q + 4, size).ToArray(), w, h, format, name);
+            return new DecodedTexture(name, w, h, PngWriter.Encode(bgra, w, h, flipY: true));
+        }
+        return null;
     }
 
     static byte[] DecodeToBgra(byte[] data, int w, int h, int format, string name)

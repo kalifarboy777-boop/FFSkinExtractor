@@ -1,14 +1,15 @@
 using FFSkinExtractor.Core;
 
 // ffextract list   <dossier-ou-bundle>
-// ffextract export <bundle> [--outfit NOM] [--hd] [--out dossier]
+// ffextract export <bundle> [--outfit NOM] [--hd] [--out dossier] [--apk fichier.xapk]
 if (args.Length < 2 || args[0] is not ("list" or "export"))
 {
     Console.WriteLine("""
         Utilisation :
           ffextract list   <dossier files du jeu | bundle>   liste les tenues trouvées
-          ffextract export <bundle> [--outfit NOM] [--hd] [--out DOSSIER]
+          ffextract export <bundle> [--outfit NOM] [--hd] [--out DOSSIER] [--apk JEU.xapk]
                                                              exporte les tenues en .glb
+                                                             (--apk : textures de peau du corps de base)
         """);
     return 1;
 }
@@ -16,6 +17,14 @@ if (args.Length < 2 || args[0] is not ("list" or "export"))
 bool hd = args.Contains("--hd");
 string? outfitFilter = Opt("--outfit");
 string outDir = Opt("--out") ?? Directory.GetCurrentDirectory();
+SkinTextures? skin = null;
+if (Opt("--apk") is { } apk)
+{
+    Console.WriteLine("Lecture des textures de peau dans l'APK…");
+    skin = SkinTextures.Load(apk);
+    if (skin.Female == null) Console.WriteLine("  texture de peau femme introuvable, couleur unie à la place");
+    if (skin.Male == null) Console.WriteLine("  texture de peau homme introuvable, couleur unie à la place");
+}
 
 var bundles = Directory.Exists(args[1])
     ? Directory.EnumerateFiles(args[1], "*", SearchOption.AllDirectories)
@@ -31,7 +40,7 @@ foreach (var file in bundles.OrderBy(f => f))
     try
     {
         using var bundle = new GameBundle(file);
-        foreach (var outfit in OutfitReader.Read(bundle, hd))
+        foreach (var outfit in OutfitReader.Read(bundle, hd, skin))
         {
             if (outfitFilter != null && !outfit.Name.Contains(outfitFilter, StringComparison.OrdinalIgnoreCase)) continue;
             Console.WriteLine($"{label} : {outfit.Gender} {outfit.Name} ({string.Join(", ", outfit.Parts.Select(p => p.SlotName))})");

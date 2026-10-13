@@ -41,12 +41,14 @@ public static class GlbExporter
 
     static MaterialBuilder MaterialFor(OutfitPart part, Dictionary<string, MaterialBuilder> cache)
     {
-        string key = part.Texture?.Name ?? "(sans texture)";
+        string key = part.Texture?.Name ?? (part.IsSkin ? "peau" : "(sans texture)");
         if (cache.TryGetValue(key, out var mat)) return mat;
         mat = new MaterialBuilder(key).WithDoubleSide(true).WithMetallicRoughnessShader()
             .WithMetallicRoughness(0, 0.8f);
         if (part.Texture != null)
             mat.WithBaseColor(new SharpGLTF.Memory.MemoryImage(part.Texture.Png));
+        else if (part.IsSkin)
+            mat.WithBaseColor(new Vector4(0.87f, 0.66f, 0.52f, 1)); // couleur de peau, faute d'APK
         else
             mat.WithBaseColor(new Vector4(0.7f, 0.7f, 0.7f, 1));
         cache[key] = mat;
