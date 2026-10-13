@@ -10,7 +10,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 const SLOTS = [
   { key: 'Hair', label: 'Cheveux', hint: 'Tête, coiffure' },
   { key: 'Mask', label: 'Masque', hint: 'Lunettes, masque' },
-  { key: 'Facepaint', label: 'Maquillage', hint: 'Pas encore géré', disabled: true },
+  { key: 'Facepaint', label: 'Maquillage', hint: 'Peinture du visage' },
   { key: 'Head', label: 'Chapeau', hint: 'Coiffe' },
   { key: 'Top', label: 'Haut', hint: 'Veste, t-shirt' },
   { key: 'Bottom', label: 'Bas', hint: 'Pantalon, jupe' },
@@ -337,7 +337,7 @@ function renderSlotFields() {
   box.innerHTML = '';
   const used = new Set(state.catalog.items.filter(i => i.gender === state.gender).map(i => i.slot));
   for (const s of SLOTS) {
-    if (!s.disabled && !used.has(s.key) && !state.slots[s.key] && !['Hair', 'Mask', 'Top', 'Bottom', 'Shoe'].includes(s.key)) continue;
+    if (!s.disabled && !used.has(s.key) && !state.slots[s.key] && !['Hair', 'Mask', 'Facepaint', 'Top', 'Bottom', 'Shoe'].includes(s.key)) continue;
     const row = el('div', 'field-row' + (s.disabled ? ' disabled' : ''));
     const value = state.slots[s.key] ?? '';
     const item = value ? itemByValue(value) : null;
@@ -634,6 +634,100 @@ function renderBatch(b) {
   if (wasRunning && !b.running) toast(`Export terminé : ${b.done} tenue(s).`);
   wasRunning = b.running;
 }
+
+// ---------------------------------------------------------------------------
+// Catalogue complet (toutes les pages d'ItemID2)
+// ---------------------------------------------------------------------------
+const BROWSE_TYPES = [
+  ['', 'Tout'], ['bundle', 'Bundles'], ['character', 'Personnages'], ['head', 'Têtes, masques'],
+  ['facepaint', 'Maquillages'], ['top', 'Hauts'], ['bottom', 'Bas'], ['shoe', 'Chaussures'],
+];
+const PIECE_LABEL = { Bundle: 'Bundle', Character: 'Personnage', Top: 'Haut', Bottom: 'Bas', Shoe: 'Chaussures',
+  Head: 'Tête', Hair: 'Cheveux', Accessory: 'Masque', Facepaint: 'Maquillage' };
+const browser = { q: '', type: '', available: false, page: 1, seq: 0 };
+
+function openBrowser() {
+  $('browserSearch').value = browser.q;
+  $('browserAvailable').checked = browser.available;
+  $('browser').showModal();
+  loadBrowser();
+}
+
+async function loadBrowser() {
+  const seq = ++browser.seq;
+  const chips = $('browserTypes');
+  chips.innerHTML = '';
+  for (const [key, label] of BROWSE_TYPES) {
+    const b = el('button', 'ghost' + (browser.type === key ? ' active' : ''), label);
+    b.type = 'button';
+    b.onclick = () => { browser.type = key; browser.page = 1; loadBrowser(); };
+    chips.append(b);
+  }
+  const params = new URLSearchParams({ q: browser.q, gender: state.gender, available: browser.available, page: browser.page });
+  if (browser.type) params.set('type', browser.type);
+  let data;
+  try { data = await (await api('browse?' + params)).json(); } catch (err) { toast(err.message, true); return; }
+  if (seq !== browser.seq) return;
+  browser.page = data.page;
+  $('browserInfo').textContent = `${data.total.toLocaleString('fr')} objets (${state.gender === 'Male' ? 'homme' : 'femme'})`
+    + ` · ${data.available.toLocaleString('fr')} en 3D dans tes fichiers · page ${data.page} / ${data.pages}`;
+  const grid = $('browserGrid');
+  grid.innerHTML = '';
+  grid.scrollTop = 0;
+  if (data.items.length === 0) grid.append(el('div', 'empty-note', 'Aucun objet.'));
+  for (const it of data.items) {
+    const card = el('button', 'card' + (it.action ? '' : ' missing'));
+    card.type = 'button';
+    card.dataset.rarity = it.rarity;
+    card.title = it.action ? 'Cliquer pour l\'essayer' : 'Pas encore téléchargé par le jeu sur ton téléphone';
+    card.append(thumb(it.iconUrl, initials(it.name), 'thumb-big'));
+    card.append(el('span', 'badge', it.action ? '3D' : 'Absent'));
+    card.append(el('div', 'name', it.name));
+    card.append(el('div', 'meta', `${it.id} · ${PIECE_LABEL[it.piece] ?? it.piece}`));
+    card.onclick = () => pickFromBrowser(it);
+    grid.append(card);
+  }
+  const pages = $('browserPages');
+  pages.innerHTML = '';
+  const nav = (label, page, disabled) => {
+    const b = el('button', 'ghost small', label);
+    b.type = 'button';
+    b.disabled = disabled;
+    b.onclick = () => { browser.page = page; loadBrowser(); };
+    pages.append(b);
+  };
+  nav('« 1', 1, data.page === 1);
+  nav('‹ Précédente', data.page - 1, data.page === 1);
+  const input = el('input');
+  input.type = 'number'; input.min = 1; input.max = data.pages; input.value = data.page;
+  input.onchange = () => { browser.page = Math.max(1, Math.min(data.pages, +input.value || 1)); loadBrowser(); };
+  pages.append(input, el('span', 'muted', `/ ${data.pages}`));
+  nav('Suivante ›', data.page + 1, data.page === data.pages);
+  nav(`${data.pages} »`, data.pages, data.page === data.pages);
+}
+
+function pickFromBrowser(it) {
+  if (!it.action) {
+    toast(`« ${it.name} » (${it.id}) n'est pas dans tes fichiers. Ouvre-le dans le jeu (boutique, coffre-fort) pour qu'il soit téléchargé, `
+      + 'ou télécharge toutes les ressources dans les paramètres du jeu, puis recopie le dossier et relance l\'analyse.', true);
+    return;
+  }
+  $('browser').close();
+  if (it.action === 'bundle') applyBundle(it.value);
+  else if (it.action === 'character') { state.character = it.value; render(); requestModel(); }
+  else setSlot(it.slot, it.value);
+  toast(`${it.name} appliqué.`);
+}
+
+let browserTimer = null;
+$('browserSearch').oninput = () => {
+  clearTimeout(browserTimer);
+  browserTimer = setTimeout(() => { browser.q = $('browserSearch').value.trim(); browser.page = 1; loadBrowser(); }, 250);
+};
+$('browserAvailable').onchange = e => { browser.available = e.target.checked; browser.page = 1; loadBrowser(); };
+$('browserClose').onclick = () => $('browser').close();
+$('openBrowser').onclick = openBrowser;
+$('openBrowser2').onclick = openBrowser;
 
 render();
 pollStatus();

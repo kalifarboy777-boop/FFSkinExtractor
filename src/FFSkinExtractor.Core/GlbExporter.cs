@@ -39,7 +39,9 @@ public static class GlbExporter
         options ??= new ExportOptions();
         var scene = new SceneBuilder(name);
         var materials = new Dictionary<string, MaterialBuilder>();
-        var rig = options.Skinned ? new RigBuilder(Skeleton.For(gender), parts.Select(p => p.Mesh).Distinct()) : null;
+        var skeleton = Skeleton.For(gender);
+        var world = skeleton.WorldMatrices();
+        var rig = options.Skinned ? new RigBuilder(skeleton, parts.Select(p => p.Mesh).Distinct()) : null;
         var joints = rig?.Joints;
 
         foreach (var part in parts)
@@ -50,7 +52,7 @@ public static class GlbExporter
             var tri = src.Submeshes[Math.Min(part.SubmeshIndex, src.Submeshes.Count - 1)];
 
             // Unity (main gauche) → glTF (main droite) : X inversé, donc ordre des sommets inversé
-            var pos = src.Positions.Select(p => new Vector3(-p.X, p.Y, p.Z)).ToArray();
+            var pos = ModelPositions(src, skeleton, world).Select(p => new Vector3(-p.X, p.Y, p.Z)).ToArray();
             var normals = SmoothNormals(pos, tri);
             var table = rig?.TableFor(src);
             var cache = new Dictionary<int, VERTEX>();
@@ -72,6 +74,41 @@ public static class GlbExporter
         }
         if (rig != null && parts.Count == 0) scene.AddNode(rig.Root);
         return scene;
+    }
+
+    // Repère habituel des maillages : Z vers le haut dans les données, déjà converti par le décodeur
+    static readonly Matrix4x4 UsualFrame = new(1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1);
+
+    /// <summary>
+    /// Positions dans le repère du personnage. La plupart des maillages sont rangés Z vers le haut, mais certains
+    /// (Racergirl, Scorpio, cheveux de Seaman…) sont rangés Y vers le haut, ou autour d'un os (la tête) :
+    /// leurs matrices de liaison (bindPoses) et le squelette de base donnent le bon repère.
+    /// </summary>
+    static Vector3[] ModelPositions(Uma.UmaMesh mesh, Skeleton skeleton, Matrix4x4[] world)
+    {
+        var binds = mesh.OwnBoneHashes.Zip(mesh.OwnBindPoses).Concat(mesh.ExtraBoneHashes.Zip(mesh.ExtraBindPoses));
+        foreach (var (hash, bind) in binds)
+        {
+            int i = skeleton.IndexOf(hash);
+            if (i < 0) continue;
+            var b = bind;
+            b.M41 *= Uma.UmaMeshDecoder.ExportScale; b.M42 *= Uma.UmaMeshDecoder.ExportScale; b.M43 *= Uma.UmaMeshDecoder.ExportScale;
+            var frame = b * world[i];
+            if (Close(frame, UsualFrame)) return mesh.Positions;
+            float scale = new Vector3(frame.M11, frame.M12, frame.M13).Length();
+            if (scale is < 0.8f or > 1.25f) return mesh.Positions;   // matrice inattendue : on garde le décodage habituel
+            // Retour aux coordonnées des données (le décodeur a fait x, z, -y), puis repère du personnage
+            return mesh.Positions.Select(p => Vector3.Transform(new Vector3(p.X, -p.Z, p.Y), frame)).ToArray();
+        }
+        return mesh.Positions;
+    }
+
+    static bool Close(Matrix4x4 a, Matrix4x4 b)
+    {
+        for (int r = 0; r < 4; r++)
+            for (int c = 0; c < 4; c++)
+                if (Math.Abs(a[r, c] - b[r, c]) > (r == 3 ? 0.01f : 0.02f)) return false;
+        return true;
     }
 
     /// <summary>

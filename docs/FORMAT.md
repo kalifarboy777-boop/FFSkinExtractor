@@ -127,3 +127,20 @@ Sans les tables chiffrées, les tenues sont reliées aux objets de la base [Item
 par leurs noms : l'icône d'un objet reprend le nom interne (`Icon_avatar_female_sc_top_nanoscientist` pour
 `Sc_Nanoscientist`) et le début de l'ID donne la pièce : 101/102 personnage, 203 haut, 204 bas, 205 chaussures,
 211 tête (cheveux, masque), 214 maquillage. Environ 85 % des tenues trouvent ainsi leurs ID.
+
+
+## Maquillage et racines de cheveux (overlays sans maillage)
+
+Les overlays `{Genre}_Headadditive_{Tenue}[_k]_Overlay` (maquillage, objets 214…) et `{Genre}_Hairroot_{Tenue}_Overlay`
+(racines et dégradés de cheveux) n'ont pas de slot à eux : le jeu les fusionne dans la texture du visage.
+Après `m_Name` et `overlayName` viennent un entier puis le **rectangle de destination** (x, y, largeur, hauteur,
+de 0 à 1, origine en bas à gauche) ; un rectangle nul couvre toute la texture. Les overlays `OverlayDataAssetWithAtlas`
+ajoutent à la fin 16 octets : le **rectangle source** dans leur texture (plusieurs morceaux, comme les deux yeux et une
+joue, partagent une texture). Les textures `_rgb` + `_sa` séparent la couleur et l'opacité (niveaux de gris).
+
+## Repère des maillages
+
+La plupart des maillages sont rangés Z vers le haut. Certains (Racergirl, Scorpio, cheveux de Seaman…) sont rangés
+Y vers le haut ou autour de la tête. Les `bindPoses` du maillage (os propres en début d'objet, os supplémentaires
+en fin d'objet ; matrices Unity rangées e00, e01, e02, e03, e10…) combinées au squelette de base donnent le passage
+du repère du maillage à celui du personnage (`bindPose × monde de l'os`, translations à l'échelle d'export).

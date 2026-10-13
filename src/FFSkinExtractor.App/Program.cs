@@ -75,6 +75,10 @@ app.MapGet("/api/catalog", () => new
     bundles = library.Bundles,
 });
 
+// Tout le catalogue ItemID2, par pages
+app.MapGet("/api/browse", (string? q, string? type, string? gender, bool? available, int? page) =>
+    library.Browse(q, type, gender, available ?? false, page ?? 1));
+
 // Objet du catalogue ItemID2, même s'il n'est pas dans les fichiers téléchargés
 app.MapGet("/api/lookup/{id:long}", (long id) => library.Catalog?.Get(id) is { } i
     ? Results.Ok(new { i.Id, i.Name, i.Rarity, i.IconUrl, i.Piece, i.Type })

@@ -26,7 +26,9 @@ public sealed class SkinTextures
             Female = data.Overlay("female_body_Overlay" + n) ?? data.Overlay("female_body_Overlay"),
             Male = data.Overlay("male_body_Overlay" + n) ?? data.Overlay("male_body_Overlay"),
             FemaleHead = data.Overlay("female_head001_Overlay" + n) ?? data.Overlay("female_head001_Overlay"),
-            MaleHead = data.Overlay("male_head001_Overlay" + n),
+            // Le visage homme par défaut (Adam) est rangé sous le nom « male_cos_no1_head_001 »
+            MaleHead = data.Overlay("male_head001_Overlay" + n) ?? data.Overlay("male_cos_no1_head_001_Overlay" + n)
+                ?? data.Overlay("male_cos_no1_head_001_Overlay"),
         };
     }
 

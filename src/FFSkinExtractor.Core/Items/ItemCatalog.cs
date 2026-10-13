@@ -59,11 +59,11 @@ public sealed class ItemCatalog
             string? gender = tokens.Contains("female") ? "Female" : tokens.Contains("male") ? "Male" : null;
             if (r.ItemType == "BUNDLE")
             {
-                // Les caisses génériques (« Icon_box_3 ») ne disent rien de leur contenu
-                if (r.Description is null or "NONE" || tokens.Contains("box")) continue;
-                var bundle = new GameItem(id, r.Description, r.Icon, r.Rare ?? "NONE", "BUNDLE", "Bundle", gender);
+                var bundle = new GameItem(id, r.Description is null or "NONE" ? r.Icon : r.Description, r.Icon, r.Rare ?? "NONE", "BUNDLE", "Bundle", gender);
                 catalog._byId[id] = bundle;
-                catalog._bundles.Add((bundle, BundleTokens(tokens)));
+                // Les caisses génériques (« Icon_box_3 ») ne disent rien de leur contenu : pas de rapprochement
+                if (r.Description is not (null or "NONE") && !tokens.Contains("box"))
+                    catalog._bundles.Add((bundle, BundleTokens(tokens)));
                 continue;
             }
             var item = new GameItem(id, r.Description is null or "NONE" ? r.Icon : r.Description, r.Icon,

@@ -10,8 +10,11 @@ un format compressé propre au jeu, qu'AssetStudio ne sait pas lire. Ce projet d
 ## Fonctionnalités
 
 - **Appli avec aperçu 3D**, comme REGO Skin Studio : on choisit un personnage (Rafael, Kelly, Alok éveillé…),
-  puis un bundle de la boutique ou des ID d'objets par emplacement (cheveux, masque, haut, bas, chaussures).
+  puis un bundle de la boutique ou des ID d'objets par emplacement (cheveux, masque, maquillage, haut, bas, chaussures).
   Export d'un look ou de tous les bundles d'un coup.
+- **Catalogue complet** : tous les objets d'ItemID2 (bundles, personnages, vêtements, maquillages), page par page
+  comme sur le site, avec ceux dont le modèle 3D est dans tes fichiers marqués « 3D ».
+- **Maquillage et racines de cheveux** : peints sur la texture du visage, comme dans le jeu (ID 214…).
 - **Squelette et poids** : armature complète (52 os femme, 55 homme) et os de tissu ou de cheveux propres à
   chaque vêtement. Le modèle se pose et s'anime directement dans Blender.
 - **Corps de base** : peau, visage, cheveux et tenue de départ du jeu, remplacés par les pièces choisies.
@@ -38,7 +41,10 @@ indique le dossier des données dans **Réglages** : l'analyse prend quelques se
 - À gauche, **Personnage** : le personnage de base ou un personnage du jeu, choisi tel quel (visage, coiffure,
   tenue d'origine). **Bundle** : un bundle de la boutique (liste ItemID2, type BUNDLE) remplit tous ses emplacements ;
   les bundles absents de tes fichiers sont listés à part. **Skin builder** : un ID d'objet par emplacement
-  (ex. `203000528`), ou une recherche par nom ; chaque ID remplace la pièce du personnage.
+  (ex. `203000528`, ou `214047002` pour un maquillage), ou une recherche par nom ; chaque ID remplace la pièce du personnage.
+- En haut, **Catalogue complet** : les ~12 700 objets d'ItemID2, filtrables par type (bundles, personnages, têtes,
+  maquillages, hauts, bas, chaussures) et par nom, ID ou rareté. Un clic sur un objet « 3D » l'essaie ;
+  un objet « Absent » n'a pas encore été téléchargé par le jeu.
 - Au centre : fais tourner avec la souris, molette pour zoomer ; boutons pour recadrer, rotation automatique,
   fil de fer, squelette, fond clair et capture PNG.
 - À droite : pièces portées, options (corps de base, squelette, PBR, textures PNG), téléchargement du `.glb`,
@@ -80,8 +86,9 @@ dotnet publish src/FFSkinExtractor.Cli -c Release -r win-x64 --self-contained -p
 
 ## Limites connues
 
+- Seuls les objets téléchargés par le jeu ont un modèle 3D. Pour en avoir plus, ouvre-les dans la boutique ou le
+  coffre-fort, ou télécharge toutes les ressources dans les paramètres du jeu, puis recopie le dossier et relance l'analyse.
 - Les ID sont trouvés par le nom : une quinzaine de tenues n'en ont pas, quelques correspondances faibles sont écartées.
-- Le visage homme par défaut est peint dans la texture du corps : il est moins détaillé que le visage femme.
 - Les animations du jeu et les effets animés (VFX) ne sont pas exportés.
 - La correspondance rugosité/métal des shaders du jeu est approchée.
 

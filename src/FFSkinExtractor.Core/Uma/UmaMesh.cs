@@ -40,6 +40,9 @@ public sealed class UmaMesh
     public required uint[] ExtraBoneHashes { get; init; }
     /// <summary>Description des os absents du squelette de base (nom, parent, transformation locale).</summary>
     public required List<UmaBone> Bones { get; init; }
+    /// <summary>Matrices de liaison (repère du maillage → repère de l'os, unités du jeu) des os propres et des os supplémentaires.</summary>
+    public Matrix4x4[] OwnBindPoses { get; init; } = [];
+    public Matrix4x4[] ExtraBindPoses { get; init; } = [];
 
     /// <summary>Hash de l'os correspondant à un index de poids.</summary>
     public uint[] BoneIndexTable(IReadOnlyList<uint> standardBones) =>
@@ -69,7 +72,8 @@ public static class UmaMeshDecoder
 
         // Données UMA standard (souvent vides : Free Fire stocke sa propre version compressée plus loin)
         int bindCount = r.Int();
-        r.Skip(bindCount * 64);            // bindPoses (Matrix4x4)
+        var bindPoses = new Matrix4x4[bindCount];   // bindPoses des os propres (OwnBoneHashes)
+        for (int i = 0; i < bindCount; i++) bindPoses[i] = r.Matrix();
         // Tableaux UMA standard, presque toujours vides : unityBoneWeights, vertices, normals, tangents,
         // colors32, uv, uv2, uv3, uv4, clothSkinning, clothSkinningSerialized, submeshes
         foreach (int size in StandardArraySizes)
@@ -158,10 +162,12 @@ public static class UmaMeshDecoder
 
         // 12. Os supplémentaires : champs vides, bindPoses, hashes, puis description des os
         var extras = Array.Empty<uint>();
+        var extraBindPoses = Array.Empty<Matrix4x4>();
         if (FindExtraBones(raw, r.Pos, out int at))
         {
             var t = new Reader(raw, at);
-            t.Skip(t.Int() * 64);
+            extraBindPoses = new Matrix4x4[t.Int()];
+            for (int i = 0; i < extraBindPoses.Length; i++) extraBindPoses[i] = t.Matrix();
             extras = ReadHashes(ref t);
             if (t.Pos + 4 <= raw.Length)
             {
@@ -174,6 +180,7 @@ public static class UmaMeshDecoder
         {
             Name = name, RootBoneName = rootBone, Positions = pos, UVs = uv, Weights = weights, Submeshes = subs,
             OwnBoneHashes = ownHashes, ExtraBoneHashes = extras, Bones = bones,
+            OwnBindPoses = bindPoses, ExtraBindPoses = extraBindPoses,
         };
     }
 
@@ -224,6 +231,13 @@ public static class UmaMeshDecoder
         readonly ReadOnlySpan<byte> _d = data;
         int _p = pos;
         public readonly int Pos => _p;
+        // Matrix4x4 Unity, rangée e00, e01, e02, e03, e10… (vecteur colonne), transposée pour System.Numerics (vecteur ligne)
+        public Matrix4x4 Matrix()
+        {
+            var f = new float[16];
+            for (int i = 0; i < 16; i++) f[i] = Float();
+            return new(f[0], f[4], f[8], f[12], f[1], f[5], f[9], f[13], f[2], f[6], f[10], f[14], f[3], f[7], f[11], f[15]);
+        }
         public int Int() { int v = BinaryPrimitives.ReadInt32LittleEndian(_d[_p..]); _p += 4; return v; }
         public uint UInt() { uint v = BinaryPrimitives.ReadUInt32LittleEndian(_d[_p..]); _p += 4; return v; }
         public float Float() { float v = BinaryPrimitives.ReadSingleLittleEndian(_d[_p..]); _p += 4; return v; }

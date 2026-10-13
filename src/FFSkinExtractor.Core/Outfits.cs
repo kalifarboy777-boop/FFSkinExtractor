@@ -32,6 +32,11 @@ public sealed record OutfitReadOptions
     public SkinTextures? Skin { get; init; }
     /// <summary>Textures rangées dans un autre bundle : (nom CAB, pathId) → texture.</summary>
     public Func<string, long, DecodedTexture?>? External { get; init; }
+    /// <summary>
+    /// Overlay rangé dans un autre bundle : reçoit des clés (<see cref="OutfitReader.OverlayKey"/>) par ordre de préférence
+    /// et renvoie les textures du premier overlay trouvé.
+    /// </summary>
+    public Func<IReadOnlyList<string>, TextureSet?>? ExternalOverlay { get; init; }
 }
 
 public sealed record Outfit(string Name, string Gender, List<OutfitPart> Parts);
@@ -60,6 +65,34 @@ public static partial class OutfitReader
 
     /// <summary>Nom normalisé : mots significatifs, index éventuel (« top_2 » → 2), marqueurs « _N » et « _PBR ».</summary>
     record Key(string Words, int? Index, bool HighDetail, bool Pbr);
+
+    /// <summary>Clé de rapprochement d'un overlay (mots triés, index, détail, PBR), comparable entre bundles.</summary>
+    public static string OverlayKey(string name) => KeyString(KeyOf(name));
+
+    static string KeyString(Key k) => $"{k.Words}|{k.Index ?? 1}|{(k.HighDetail ? 1 : 0)}|{(k.Pbr ? 1 : 0)}";
+
+    // Mots de pièce interchangeables entre le nom d'un slot et celui de son overlay
+    static readonly (string From, string To)[] Synonyms =
+    [
+        ("hair", "hat"), ("hat", "hair"), ("shoe", "shoes"), ("shoes", "shoe"), ("feet", "shoe"), ("feet", "shoes"),
+        ("clothes", "top"), ("top", "clothes"), ("leg", "bottom"), ("bottom", "body"), ("shoe", "body"), ("top", "body"),
+        ("hair", "head"),   // cheveux peints dans la texture du visage (personnages)
+    ];
+
+    // La clé du slot, puis les variantes : autre niveau de détail, autre mot pour la pièce
+    static IEnumerable<Key> Variants(Key k)
+    {
+        yield return k;
+        yield return k with { HighDetail = !k.HighDetail };
+        var words = k.Words.Split('_');
+        foreach (var (from, to) in Synonyms)
+        {
+            if (!words.Contains(from)) continue;
+            var w = string.Join('_', words.Select(x => x == from ? to : x).OrderBy(x => x, StringComparer.Ordinal));
+            yield return k with { Words = w };
+            yield return k with { Words = w, HighDetail = !k.HighDetail };
+        }
+    }
 
     static Key KeyOf(string name)
     {
@@ -143,17 +176,26 @@ public static partial class OutfitReader
             // Overlay propre à ce sous-maillage (« top_ingame_1 » → « top_2_lobby_overlay »),
             // sinon l'overlay principal de la pièce.
             var dedicated = slotIndex > 0 ? FindOverlay(slotKey, slotIndex + 1) : null;
-            var main = FindOverlay(slotKey, null);
+            var main = FindAny(slotKey);
+            string material0 = byId.TryGetValue(slot.MaterialPathId, out var mo0) ? mo0.Name : "";
+            // Sous-maillage découpé (barbe, mèches) : overlay « CutOff » de la tenue (« Male_Accessory_CutOff_Cos_Seaman »)
+            if (dedicated == null && slotIndex > 0 && material0.Contains("CutOff", StringComparison.OrdinalIgnoreCase))
+                dedicated = CutOffOverlay(outfitName, gender);
 
             // Les slots détaillés (_N) indiquent leur shader : « DTSAvatarSkin » sur un maillage à plusieurs
             // morceaux = peau du corps. Les slots simplifiés utilisent tous le même shader : on devine
             // la peau d'après la place du morceau dans la texture.
-            string material = byId.TryGetValue(slot.MaterialPathId, out var mo) ? mo.Name : "";
-            bool isSkin = dedicated == null && (highDetail
+            string material = material0;
+            // Le visage d'un personnage utilise aussi le shader de peau, mais avec sa propre texture
+            bool isFace = main != null && PieceOf(m.Groups["rest"].Value) == "Head"
+                && m.Groups["rest"].Value.Split('_').Any(w => w.Equals("head", StringComparison.OrdinalIgnoreCase));
+            bool isSkin = dedicated == null && !isFace && (highDetail
                 ? material.Contains("AvatarSkin") && !material.Contains("Emit") && mesh.Submeshes.Count > 1
                 : IsSkinSubmesh(slot.MeshPathId, mesh, slot.SubmeshIndex));
             var overlay = dedicated ?? main;
-            var textures = isSkin ? new Lazy<TextureSet>(options.Skin?.For(gender) ?? TextureSet.Empty) : new Lazy<TextureSet>(() => Textures(overlay));
+            var textures = isSkin ? new Lazy<TextureSet>(options.Skin?.For(gender) ?? TextureSet.Empty)
+                : overlay != null ? new Lazy<TextureSet>(() => Textures(overlay))
+                : new Lazy<TextureSet>(() => options.ExternalOverlay?.Invoke(Variants(slotKey).Select(KeyString).Distinct().ToList()) ?? TextureSet.Empty);
             var kind = material.Contains("CutOff", StringComparison.OrdinalIgnoreCase) || material.Contains("AvatarHair") ? MaterialKind.Cutout
                 : material.Contains("Glass", StringComparison.OrdinalIgnoreCase) ? MaterialKind.Transparent
                 : MaterialKind.Opaque;
@@ -211,7 +253,22 @@ public static partial class OutfitReader
         UmaObject? ResolveOverlay(Key slotKey)
         {
             int slotIndex = slotKey.Index ?? 0;
-            return (slotIndex > 0 ? FindOverlay(slotKey, slotIndex + 1) : null) ?? FindOverlay(slotKey, null);
+            return (slotIndex > 0 ? FindOverlay(slotKey, slotIndex + 1) : null) ?? FindAny(slotKey);
+        }
+
+        UmaObject? FindAny(Key slotKey)
+        {
+            foreach (var k in Variants(slotKey))
+                if (FindOverlay(k, null) is { } o) return o;
+            return null;
+        }
+
+        UmaObject? CutOffOverlay(string outfitName, string gender)
+        {
+            var key = outfitName.ToLowerInvariant().Split('_').Where(w => w is not ("sc" or "cos")).ToList();
+            return overlays.Select(o => o.Obj).FirstOrDefault(o => o.Name.Contains("CutOff", StringComparison.OrdinalIgnoreCase)
+                && o.Name.StartsWith(gender, StringComparison.OrdinalIgnoreCase)
+                && key.All(w => o.Name.Contains(w, StringComparison.OrdinalIgnoreCase)));
         }
 
         UmaObject? FindOverlay(Key slotKey, int? index)

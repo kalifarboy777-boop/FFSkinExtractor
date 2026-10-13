@@ -46,7 +46,21 @@ public sealed record Selection(string Gender, bool HighDetail, Dictionary<string
     bool Base = true, bool Skinned = true, bool Pbr = true)
 {
     public string? Name { get; init; }
+    /// <summary>Tenue interne du personnage choisi (« Sc_Hitman »), pour son maquillage et ses racines de cheveux.</summary>
+    public string? Character { get; init; }
+    /// <summary>Maquillage choisi (nom interne « Cos_Aurora_White »), ou null.</summary>
+    public string? FacePaint { get; init; }
 }
+
+/// <summary>Overlay de maquillage ou de racines de cheveux, trouvé dans un bundle (ou dans l'APK si Bundle est null).</summary>
+sealed record HeadLayerRef(string Gender, HeadLayerKind Kind, string Name, string? Bundle, string Overlay, bool Atlas);
+
+/// <summary>Un objet du catalogue ItemID2 et ce qu'on peut en faire avec les fichiers du joueur.</summary>
+/// <param name="Action">« bundle », « slot » ou « character » si le modèle 3D est dans les fichiers, sinon null.</param>
+public sealed record BrowseItem(long Id, string Name, string IconUrl, string Rarity, string Type, string Piece, string? Gender,
+    string? Action, string? Value, string? Slot);
+
+public sealed record BrowsePage(int Total, int Page, int Pages, int Available, List<BrowseItem> Items);
 
 public enum LibraryState { NotConfigured, Scanning, Ready, Error }
 
@@ -67,6 +81,12 @@ public sealed class Library : IDisposable
     readonly Dictionary<(string, bool), List<OutfitPart>> _baseParts = [];
     readonly Dictionary<bool, SkinTextures> _skins = [];
     Dictionary<string, string> _cabToBundle = new(StringComparer.OrdinalIgnoreCase);
+    List<HeadLayerRef> _headLayers = [];
+    // Overlays de tous les bundles, par clé de rapprochement : un slot peut prendre ses textures dans un autre bundle
+    Dictionary<string, (string Bundle, string Overlay)> _overlayIndex = [];
+    readonly Dictionary<string, TextureSet?> _externalOverlays = [];
+    readonly Dictionary<(HeadLayerKind, string, string), List<HeadLayer>> _layerCache = [];
+    Dictionary<long, List<(string Gender, string Name)>> _facePaintIndex = [];
     Task<GameData?>? _gameData;
 
     public AppSettings Settings { get; private set; }
@@ -128,6 +148,8 @@ public sealed class Library : IDisposable
 
             var entries = new List<OutfitEntry>();
             var cabs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var layers = new List<HeadLayerRef>();
+            var overlayIndex = new Dictionary<string, (string, string)>();
             for (int i = 0; i < bundles.Count; i++)
             {
                 string label = Path.GetFileName(bundles[i]).Split('.')[0];
@@ -137,6 +159,13 @@ public sealed class Library : IDisposable
                 {
                     using var bundle = new GameBundle(bundles[i]);
                     cabs.TryAdd(bundle.CabName, bundles[i]);
+                    foreach (var o in bundle.UmaObjects())
+                    {
+                        if (!o.ScriptClass.StartsWith("OverlayDataAsset")) continue;
+                        if (HeadPaint.Classify(o.Name) is { } c)
+                            layers.Add(new HeadLayerRef(c.Gender, c.Kind, c.Name, bundles[i], o.Name, o.ScriptClass.EndsWith("Atlas")));
+                        else overlayIndex.TryAdd(OutfitReader.OverlayKey(o.Name), (bundles[i], o.Name));
+                    }
                     foreach (bool hd in new[] { true, false })
                         foreach (var o in OutfitReader.Read(bundle, new OutfitReadOptions { HighDetail = hd }))
                             entries.Add(Describe(o, hd, label, bundles[i]));
@@ -144,11 +173,25 @@ public sealed class Library : IDisposable
                 catch (Exception) { /* bundle illisible : on passe au suivant */ }
             }
             _cabToBundle = cabs;
+            lock (_layerCache) _layerCache.Clear();
+            _headLayers = layers;
+            _overlayIndex = overlayIndex;
+            lock (_externalOverlays) _externalOverlays.Clear();
             Outfits = entries.OrderBy(e => e.Gender).ThenBy(e => e.DisplayName, StringComparer.OrdinalIgnoreCase).ToList();
             BuildCatalogViews();
+            BuildFacePaintViews();
 
             Message = "Lecture du corps de base…";
             var data = await _gameData;
+            if (data != null)
+            {
+                // Maquillages et racines de cheveux rangés dans l'APK (personnages de départ)
+                var known = _headLayers.Select(l => l.Overlay).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                foreach (var o in data.FindAll(n => HeadPaint.Classify(n) != null))
+                    if (o.Type == AssetsTools.NET.Extra.AssetClassID.MonoBehaviour && known.Add(o.Name) && HeadPaint.Classify(o.Name) is { } c)
+                        _headLayers.Add(new HeadLayerRef(c.Gender, c.Kind, c.Name, null, o.Name, false));
+                BuildFacePaintViews();
+            }
             Progress = 1;
             State = LibraryState.Ready;
             Message = $"{Characters.Count} personnages, {Bundles.Count(b => b.Available)} bundles, {SlotItems.Count} objets"
@@ -273,10 +316,161 @@ public sealed class Library : IDisposable
 
     Dictionary<long, List<(string Key, string Piece)>> _itemIndex = [];
 
+    static readonly Dictionary<string, string[]> BrowseTypes = new()
+    {
+        ["bundle"] = ["Bundle"], ["character"] = ["Character"], ["top"] = ["Top"], ["bottom"] = ["Bottom"],
+        ["shoe"] = ["Shoe"], ["head"] = ["Head", "Hair", "Accessory"], ["facepaint"] = ["Facepaint"],
+    };
+
+    /// <summary>
+    /// Tout le catalogue ItemID2 (bundles, vêtements, personnages), page par page comme sur le site,
+    /// avec pour chaque objet ce qu'il fait dans l'appli quand son modèle est dans les fichiers.
+    /// </summary>
+    public BrowsePage Browse(string? query, string? type, string? gender, bool onlyAvailable, int page, int size = 60)
+    {
+        if (Catalog == null) return new(0, 1, 1, 0, []);
+        var words = (query ?? "").ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        string[]? pieces = type != null && BrowseTypes.TryGetValue(type, out var t) ? t : null;
+        var bundleById = Bundles.Where(b => b.Available && b.Id != null).GroupBy(b => b.Id!.Value).ToDictionary(g => g.Key, g => g.ToList());
+        var slotById = SlotItems.Where(i => i.Id != null).GroupBy(i => i.Id!.Value).ToDictionary(g => g.Key, g => g.ToList());
+        var charById = Characters.Where(c => c.Item != null).GroupBy(c => c.Item!.Id).ToDictionary(g => g.Key, g => g.ToList());
+
+        BrowseItem Describe(GameItem i)
+        {
+            string? action = null, value = null, slot = null;
+            bool G(string? g) => gender == null || g == gender;
+            if (i.Piece == "Bundle" && bundleById.TryGetValue(i.Id, out var bl) && bl.FirstOrDefault(b => G(b.Gender)) is { } b)
+                (action, value) = ("bundle", b.Value);
+            else if (i.Piece == "Character" && charById.TryGetValue(i.Id, out var cl) && cl.FirstOrDefault(c => G(c.Gender)) is { } c)
+                (action, value) = ("character", c.Key);
+            else if (slotById.TryGetValue(i.Id, out var sl) && sl.FirstOrDefault(x => G(x.Gender)) is { } si)
+                (action, value, slot) = ("slot", si.Value, si.Slot);
+            return new BrowseItem(i.Id, i.Name, i.IconUrl, i.Rarity, i.Type, i.Piece, i.Gender, action, value, slot);
+        }
+
+        var all = Catalog.Items
+            .Where(i => i.Piece is not "Other")
+            .Where(i => pieces == null || pieces.Contains(i.Piece))
+            .Where(i => gender == null || i.Gender == null || i.Gender == gender)
+            .Where(i => words.All(w => i.Name.Contains(w, StringComparison.OrdinalIgnoreCase) || i.Icon.Contains(w, StringComparison.OrdinalIgnoreCase)
+                                       || i.Id.ToString().StartsWith(w) || i.Rarity.Equals(w, StringComparison.OrdinalIgnoreCase)))
+            .OrderBy(i => i.Id)
+            .Select(Describe).ToList();
+        int available = all.Count(i => i.Action != null);
+        if (onlyAvailable) all = all.Where(i => i.Action != null).ToList();
+        int pages = Math.Max(1, (all.Count + size - 1) / size);
+        page = Math.Clamp(page, 1, pages);
+        return new(all.Count, page, pages, available, all.Skip((page - 1) * size).Take(size).ToList());
+    }
+
+    // Maquillages (ID 214…) : un par tenue qui a des overlays « Headadditive », relié aux objets ItemID2
+    void BuildFacePaintViews()
+    {
+        var items = new List<SlotItem>();
+        var index = new Dictionary<long, List<(string, string)>>();
+        foreach (var g in _headLayers.Where(l => l.Kind == HeadLayerKind.FacePaint)
+                     .GroupBy(l => (l.Gender, Name: l.Name.ToLowerInvariant())))
+        {
+            var (gender, name) = (g.Key.Gender, g.First().Name);
+            var matches = Catalog?.Match(gender, name, "Facepaint").Where(m => m.Score >= 7).ToList() ?? [];
+            int best = matches.Count > 0 ? matches[0].Score : 0;
+            var linked = matches.Where(m => m.Score == best).ToList();
+            if (linked.Count == 0)
+                items.Add(new SlotItem($"f:{gender}:{name}", null, Regex.Replace(name, @"^(sc|cos)_", "", RegexOptions.IgnoreCase).Replace('_', ' ') + " (maquillage)",
+                    "NONE", null, "Facepaint", gender, name));
+            foreach (var m in linked)
+            {
+                items.Add(new SlotItem(m.Item.Id.ToString(), m.Item.Id, m.Item.Name, m.Item.Rarity, m.Item.IconUrl, "Facepaint", gender, name));
+                if (!index.TryGetValue(m.Item.Id, out var list)) index[m.Item.Id] = list = [];
+                list.Add((gender, name));
+            }
+        }
+        _facePaintIndex = index;
+        // Un bundle dont la tenue a un maquillage le met aussi dans l'emplacement Maquillage
+        foreach (var b in Bundles.Where(b => b.Available && b.Outfit != null && b.Gender != null))
+        {
+            var fp = items.FirstOrDefault(i => i.Gender == b.Gender && i.Outfit.Equals(b.Outfit, StringComparison.OrdinalIgnoreCase));
+            if (fp != null) b.Slots.TryAdd("Facepaint", fp.Value);
+        }
+        SlotItems = SlotItems.Where(i => i.Slot != "Facepaint").Concat(items.DistinctBy(i => (i.Value, i.Gender))).ToList();
+    }
+
+    /// <summary>Calques d'une tenue (maquillage ou racines), décodés une fois puis gardés en mémoire.</summary>
+    List<HeadLayer> HeadLayers(HeadLayerKind kind, string gender, string name, GameData? data)
+    {
+        var key = (kind, gender, name.ToLowerInvariant());
+        lock (_layerCache)
+            if (_layerCache.TryGetValue(key, out var cached)) return cached;
+        var refs = _headLayers.Where(l => l.Kind == kind && l.Gender == gender && l.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(l => l.Overlay, StringComparer.OrdinalIgnoreCase).ToList();
+        var result = new List<HeadLayer>();
+        foreach (var group in refs.GroupBy(r => r.Bundle))
+        {
+            try
+            {
+                if (group.Key == null)
+                {
+                    if (data == null) continue;
+                    foreach (var r in group)
+                        if (data.Find(r.Overlay, AssetsTools.NET.Extra.AssetClassID.MonoBehaviour) is { } ov)
+                        {
+                            var raw = data.Raw(ov);
+                            bool IsTex(FFSkinExtractor.Core.PPtr p) => data.Resolve(ov.File, p.FileId, p.PathId)?.Type == AssetsTools.NET.Extra.AssetClassID.Texture2D;
+                            DecodedTexture? Tex(FFSkinExtractor.Core.PPtr p) => data.Resolve(ov.File, p.FileId, p.PathId) is { } t ? data.Texture(t) : null;
+                            if ((HeadPaint.Parse(r.Overlay, raw, false, IsTex, Tex) ?? HeadPaint.Parse(r.Overlay, raw, true, IsTex, Tex)) is { } layer)
+                                result.Add(layer);
+                        }
+                    continue;
+                }
+                using var bundle = new GameBundle(group.Key);
+                var wanted = group.ToDictionary(r => r.Overlay, StringComparer.Ordinal);
+                foreach (var o in bundle.UmaObjects())
+                {
+                    if (!wanted.TryGetValue(o.Name, out var r)) continue;
+                    var layer = HeadPaint.Parse(r.Overlay, o.Raw, r.Atlas,
+                        p => p.FileId != 0 || bundle.GetInfo(p.PathId)?.TypeId == (int)AssetsTools.NET.Extra.AssetClassID.Texture2D,
+                        p => p.FileId != 0
+                            ? (bundle.ExternalName(p.FileId) is { } cab ? ExternalTexture(cab, p.PathId) : null)
+                            : bundle.GetInfo(p.PathId) is { } info ? TextureDecoder.Decode(bundle, info) : null);
+                    if (layer != null) result.Add(layer);
+                }
+            }
+            catch (Exception) { /* calque illisible : le visage reste tel quel */ }
+        }
+        lock (_layerCache) _layerCache[key] = result;
+        return result;
+    }
+
+    /// <summary>
+    /// Calques à peindre sur le visage : racines des cheveux portés (ceux de la tenue choisie, du personnage,
+    /// ou du personnage de base), puis le maquillage choisi ou celui du personnage.
+    /// </summary>
+    List<HeadLayer> FaceLayersFor(Selection sel, GameData? data)
+    {
+        var layers = new List<HeadLayer>();
+        string? hairFrom = sel.Pieces.TryGetValue("Hair", out var hairId) ? Get(hairId)?.Name : sel.Character;
+        if (hairFrom != null) layers.AddRange(HeadLayers(HeadLayerKind.HairRoot, sel.Gender, hairFrom, data));
+        else if (sel.Base && data != null && BaseHairRoot(data, sel.Gender) is { } baseRoot)
+            layers.AddRange(HeadLayers(HeadLayerKind.HairRoot, sel.Gender, baseRoot, data));
+        string? paint = sel.FacePaint ?? sel.Character;
+        if (paint != null) layers.AddRange(HeadLayers(HeadLayerKind.FacePaint, sel.Gender, paint, data));
+        return layers;
+    }
+
+    // Racines de cheveux de la recette du personnage de base (« Female_Hairroot_Sc_Agent_Overlay »)
+    static string? BaseHairRoot(GameData data, string gender)
+    {
+        var recipe = data.Find($"{gender}BaseRecipe_max_N", AssetsTools.NET.Extra.AssetClassID.MonoBehaviour);
+        if (recipe == null) return null;
+        foreach (var (_, overlay) in FFSkinExtractor.Core.Uma.UmaAssets.ParseBaseRecipe(data.Raw(recipe.Value)))
+            if (overlay != null && HeadPaint.Classify(overlay) is { Kind: HeadLayerKind.HairRoot } c) return c.Name;
+        return null;
+    }
+
     public static string SlotLabel(string slot) => slot switch
     {
         "Hair" => "Cheveux", "Mask" => "Masque", "Head" => "Tête", "Top" => "Haut", "Bottom" => "Bas",
-        "Shoe" => "Chaussures", "Hands" => "Mains", _ => "Autre",
+        "Shoe" => "Chaussures", "Hands" => "Mains", "Facepaint" => "Maquillage", _ => "Autre",
     };
 
     OutfitEntry? ByKey(string key, bool hd) =>
@@ -296,10 +490,20 @@ public sealed class Library : IDisposable
             foreach (var p in ch.Pieces) pieces[p.Piece] = ch.Id;
             name = ch.Name;
         }
+        string? character = null, facePaint = null;
+        if (look.Character is { Length: > 0 } ck2 && ByKey(ck2, look.HighDetail) is { } chr) character = chr.Name;
         foreach (var (slot, raw) in look.Slots ?? [])
         {
             string value = raw.Trim();
             if (value.Length == 0) continue;
+            if (slot == "Facepaint" || value.StartsWith("f:") || (long.TryParse(value, out long fid) && _facePaintIndex.ContainsKey(fid)))
+            {
+                string? fp = value.StartsWith("f:") && value.Split(':') is [_, var fg, var fn] && fg == look.Gender ? fn
+                    : long.TryParse(value, out fid) && _facePaintIndex.TryGetValue(fid, out var fl)
+                        ? fl.Where(f => f.Gender == look.Gender).Select(f => f.Name).FirstOrDefault() : null;
+                if (fp == null) unknown.Add(value); else facePaint = fp;
+                continue;
+            }
             (string Key, string Piece)? target = null;
             if (long.TryParse(value, out long id) && _itemIndex.TryGetValue(id, out var list))
                 target = list.Where(t => t.Key.StartsWith(look.Gender + ":")).Cast<(string, string)?>().FirstOrDefault();
@@ -317,7 +521,7 @@ public sealed class Library : IDisposable
             name ??= entry.Name;
         }
         var sel = new Selection(look.Gender, look.HighDetail, pieces, look.Base, look.Skinned, look.Pbr)
-            { Name = $"{look.Gender}_{name ?? "Base"}{(look.HighDetail ? "_HD" : "")}" };
+            { Name = $"{look.Gender}_{name ?? "Base"}{(look.HighDetail ? "_HD" : "")}", Character = character, FacePaint = facePaint };
         return (sel, unknown);
     }
 
@@ -343,7 +547,7 @@ public sealed class Library : IDisposable
     public async Task<byte[]> BuildAsync(Selection sel, CancellationToken ct = default)
     {
         string key = string.Join("|", sel.Gender, sel.HighDetail, sel.Base, sel.Skinned, sel.Pbr,
-            string.Join(",", sel.Pieces.OrderBy(p => p.Key).Select(p => p.Key + "=" + p.Value)), sel.Name);
+            string.Join(",", sel.Pieces.OrderBy(p => p.Key).Select(p => p.Key + "=" + p.Value)), sel.Name, sel.Character, sel.FacePaint);
         if (_modelCache.TryGetValue(key, out var cached)) return cached;
         var glb = await WithPartsAsync(sel, (name, parts) =>
             GlbExporter.Build(name, sel.Gender, parts, new ExportOptions { Skinned = sel.Skinned, Pbr = sel.Pbr })
@@ -384,6 +588,7 @@ public sealed class Library : IDisposable
             var parts = chosen;
             if (sel.Base && data != null)
                 parts = BaseCharacter.Compose(BaseParts(data, sel.Gender, sel.HighDetail), chosen);
+            parts = HeadPaint.Apply(parts, FaceLayersFor(sel, data));
             return use(DefaultName(sel), parts);
         }
         finally { _build.Release(); }
@@ -430,6 +635,7 @@ public sealed class Library : IDisposable
                 HighDetail = entry.HighDetail,
                 Skin = skin,
                 External = ExternalTexture,
+                ExternalOverlay = ExternalOverlay,
             });
             node = _open.AddFirst((key, bundle, outfits));
             while (_open.Count > OpenBundleLimit)
@@ -445,6 +651,35 @@ public sealed class Library : IDisposable
         }
         return node.Value.Outfits.FirstOrDefault(o => o.Gender == entry.Gender && o.Name == entry.Name)
             ?? throw new KeyNotFoundException($"{entry.Name} absent de {entry.Bundle}");
+    }
+
+    // Overlay d'un autre bundle (ex. coloris dont les textures sont rangées ailleurs)
+    TextureSet? ExternalOverlay(IReadOnlyList<string> keys)
+    {
+        foreach (var key in keys)
+        {
+            if (!_overlayIndex.TryGetValue(key, out var at)) continue;
+            lock (_externalOverlays)
+                if (_externalOverlays.TryGetValue(at.Overlay, out var cached)) return cached;
+            TextureSet? set = null;
+            try
+            {
+                using var bundle = new GameBundle(at.Bundle);
+                var o = bundle.UmaObjects().FirstOrDefault(x => x.Name == at.Overlay);
+                if (o != null)
+                {
+                    var refs = FFSkinExtractor.Core.Uma.UmaAssets.OverlayTextures(o.Raw, p => p.FileId != 0
+                        || bundle.GetInfo(p.PathId)?.TypeId == (int)AssetsTools.NET.Extra.AssetClassID.Texture2D);
+                    set = TextureSet.FromOverlay(refs.Select(p => p.FileId != 0
+                        ? (bundle.ExternalName(p.FileId) is { } cab ? ExternalTexture(cab, p.PathId) : null)
+                        : bundle.GetInfo(p.PathId) is { } info ? TextureDecoder.Decode(bundle, info) : null).ToList());
+                }
+            }
+            catch (Exception) { set = null; }
+            lock (_externalOverlays) _externalOverlays[at.Overlay] = set;
+            if (set?.BaseColor != null) return set;
+        }
+        return null;
     }
 
     // Texture rangée dans un autre bundle, désigné par son nom CAB

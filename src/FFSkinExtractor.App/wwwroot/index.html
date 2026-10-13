@@ -25,6 +25,7 @@
       <div class="progress" id="statusProgress"><div></div></div>
     </div>
     <div class="top-actions">
+      <button class="primary small-btn" id="openBrowser" title="Tous les objets d'ItemID2, page par page">Catalogue complet</button>
       <button class="ghost" id="openFolder" title="Ouvrir le dossier d'export">Dossier d'export</button>
       <button class="ghost" id="openSettings" title="Réglages">Réglages</button>
     </div>
@@ -54,6 +55,7 @@
         <div class="section-title">Bundle</div>
         <div class="picker" id="bundlePicker"></div>
         <p class="hint">Un bundle remplit tous ses emplacements d'un coup. Liste et ID : ItemID2, type BUNDLE.</p>
+        <button class="ghost small wide" id="openBrowser2">Parcourir tout le catalogue ItemID2</button>
       </section>
 
       <section>
@@ -123,6 +125,24 @@
     <span id="credit"></span>
     <span>Outil non officiel, sans lien avec Garena. Pour un usage personnel.</span>
   </footer>
+
+  <!-- Catalogue complet ItemID2 -->
+  <dialog id="browser" class="browser">
+    <div class="browser-head">
+      <div>
+        <h2>Catalogue complet</h2>
+        <p class="muted small-text" id="browserInfo"></p>
+      </div>
+      <button type="button" class="ghost" id="browserClose">Fermer</button>
+    </div>
+    <div class="browser-filters">
+      <input id="browserSearch" type="search" placeholder="Nom, ID ou rareté (ex. Cobra, 203000528, ORANGE)…" spellcheck="false">
+      <div class="chips" id="browserTypes"></div>
+      <label class="check"><input type="checkbox" id="browserAvailable"> Seulement ceux en 3D dans mes fichiers</label>
+    </div>
+    <div class="browser-grid" id="browserGrid"></div>
+    <div class="browser-pages" id="browserPages"></div>
+  </dialog>
 
   <!-- Réglages -->
   <dialog id="settings">
