@@ -61,11 +61,12 @@ public static class UmaMeshDecoder
                     r.U16LE() / 10000f, r.U16LE() / 10000f, r.U16LE() / 10000f, r.U16LE() / 10000f);
             }
         }
-        r.ExpectEmpty(name);
+        r.SkipOptional(n, name);
         // 4. n × 4 octets (normales ou couleurs, non utilisés pour l'instant)
         c = r.Int(); r.Skip(c * 4);
-        r.ExpectEmpty(name);
-        r.ExpectEmpty(name);
+        // 5-6. tableaux optionnels de n × 4 octets (UV secondaires sur certaines tenues)
+        r.SkipOptional(n, name);
+        r.SkipOptional(n, name);
 
         // 7. Positions : n × 3 × u16 big-endian
         c = r.Int(); Expect(c, n * 6, name, "positions");
@@ -118,10 +119,12 @@ public static class UmaMeshDecoder
         public void Skip(int c) => _p += c;
         public void Align() => _p = (_p + 3) & ~3;
         public string String() { int len = Int(); var s = System.Text.Encoding.UTF8.GetString(_d.Slice(_p, len)); _p += len; Align(); return s; }
-        public void ExpectEmpty(string name)
+        /// <summary>Tableau vide, ou n éléments de 4 octets.</summary>
+        public void SkipOptional(int n, string name)
         {
             int c = Int();
-            if (c != 0) throw new InvalidDataException($"{name} : tableau vide attendu, {c} trouvé à 0x{_p - 4:x}");
+            if (c == n) { Skip(c * 4); return; }
+            if (c != 0) throw new InvalidDataException($"{name} : tableau inattendu ({c} éléments) à 0x{_p - 4:x}");
         }
     }
 }

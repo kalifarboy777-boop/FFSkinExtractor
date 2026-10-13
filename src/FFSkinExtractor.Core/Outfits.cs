@@ -15,8 +15,21 @@ public sealed record Outfit(string Name, string Gender, List<OutfitPart> Parts);
 /// </summary>
 public static partial class OutfitReader
 {
-    [GeneratedRegex(@"^(?<gender>male|female)_(?<part>[a-z]+)_(?<outfit>.+?)(?<n>_n)?(_\d+)?$", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^(?<gender>male|female)_(?<rest>.+?)(?<n>_n)?(_\d+)?$", RegexOptions.IgnoreCase)]
     private static partial Regex SlotNameRegex();
+
+    static readonly HashSet<string> PartNames = new(StringComparer.OrdinalIgnoreCase)
+        { "top", "bottom", "shoe", "shoes", "feet", "head", "hair", "leg", "accessory", "mask", "face", "hand", "hands" };
+
+    // « Top_SC_Hitman » et « Racergirl_top » donnent tous deux la tenue sans le nom de la pièce
+    static string OutfitName(string rest)
+    {
+        var parts = rest.Split('_').ToList();
+        if (parts.Count > 1 && PartNames.Contains(parts[0])) parts.RemoveAt(0);
+        else if (parts.Count > 1 && PartNames.Contains(parts[^1])) parts.RemoveAt(parts.Count - 1);
+        else if (parts.Count > 2 && PartNames.Contains(parts[^2])) parts.RemoveRange(parts.Count - 2, 2);
+        return string.Join('_', parts);
+    }
 
     record Slot(string SlotName, long MeshPathId, int SubmeshIndex);
 
@@ -41,9 +54,10 @@ public static partial class OutfitReader
             if (m.Groups["n"].Success != highDetail) continue;
 
             string gender = char.ToUpper(m.Groups["gender"].Value[0]) + m.Groups["gender"].Value[1..].ToLower();
-            string key = gender + "_" + m.Groups["outfit"].Value;
+            string outfitName = OutfitName(m.Groups["rest"].Value);
+            string key = gender + "_" + outfitName;
             if (!outfits.TryGetValue(key, out var outfit))
-                outfits[key] = outfit = new Outfit(m.Groups["outfit"].Value, gender, []);
+                outfits[key] = outfit = new Outfit(outfitName, gender, []);
 
             var overlay = overlays.FirstOrDefault(o =>
                 string.Equals(o.Name, slot.SlotName + "_Overlay", StringComparison.OrdinalIgnoreCase));
