@@ -30,6 +30,7 @@ builder.Services.ConfigureHttpJsonOptions(o =>
 var app = builder.Build();
 using var library = new Library(settings);
 var batch = new BatchJob();
+var pull = new DevicePull();
 
 // ---- Interface (fichiers intégrés à l'exécutable) ----
 var assembly = Assembly.GetExecutingAssembly();
@@ -50,6 +51,7 @@ app.MapGet("/api/status", () => new
     credit = ItemCatalog.Credit,
     suggestions = AppSettings.Suggestions().ToList(),
     batch = batch.Snapshot(),
+    pull = pull.Snapshot(),
     version = assembly.GetName().Version?.ToString(3),
 });
 
@@ -59,6 +61,7 @@ app.MapPost("/api/settings", (AppSettings s) =>
     {
         DataFolder = Clean(s.DataFolder),
         GamePackage = Clean(s.GamePackage),
+        AdbPath = Clean(s.AdbPath),
         ExportFolder = Clean(s.ExportFolder) ?? new AppSettings().ExportFolder,
     };
     clean.Save();
@@ -171,6 +174,31 @@ app.MapPost("/api/export-all", (BatchRequest req) =>
 
 app.MapPost("/api/export-all/cancel", () => { batch.Cancelled = true; return Results.Ok(); });
 
+// ---- Récupération des skins téléchargés par le jeu sur un téléphone ou un émulateur (ADB) ----
+app.MapGet("/api/devices", async (CancellationToken ct) =>
+{
+    if (DevicePull.FindAdb(library.Settings.AdbPath) is not { } adb)
+        return Results.Ok(new { adb = (string?)null, devices = new List<AndroidDevice>() });
+    var devices = await DevicePull.ListDevicesAsync(adb, ct);
+    return Results.Ok(new { adb = (string?)adb, devices });
+});
+
+app.MapPost("/api/pull", async (PullRequest req, CancellationToken ct) =>
+{
+    if (library.Settings.DataFolder is not { } folder || !Directory.Exists(folder))
+        return Results.Problem("Choisis d'abord le dossier des données dans les réglages.");
+    if (DevicePull.FindAdb(library.Settings.AdbPath) is not { } adb) return Results.Problem("ADB introuvable.");
+    var device = (await DevicePull.ListDevicesAsync(adb, ct)).FirstOrDefault(d => d.Serial == req.Serial);
+    if (device == null) return Results.Problem("Appareil déconnecté.");
+    if (device.Games.Count == 0) return Results.Problem("Free Fire n'est pas installé sur cet appareil (ou n'a encore rien téléchargé).");
+    // Nouvelle analyse une fois la copie finie, pour que les skins récupérés apparaissent
+    if (!pull.TryStart(adb, device, folder, () => library.StartScan(library.Settings)))
+        return Results.Conflict("Une récupération est déjà en cours.");
+    return Results.Ok();
+});
+
+app.MapPost("/api/pull/cancel", () => { pull.Cancel(); return Results.Ok(); });
+
 app.MapPost("/api/open-folder", () =>
 {
     string dir = library.Settings.ExportFolder;
@@ -228,6 +256,7 @@ static void OpenShell(string target)
     catch (Exception) { /* pas de navigateur ou d'explorateur : l'adresse est affichée dans la console */ }
 }
 
+record PullRequest(string Serial);
 record ExportRequest(Look Look, string? FileName, bool Textures = false);
 record BatchRequest(string Gender, bool HighDetail = true, string? Character = null, bool Base = true);
 

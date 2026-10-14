@@ -39,6 +39,16 @@ Mets dans un même dossier (par exemple `Documents\FFdata`) :
    recettes des vêtements ; sans lui les tenues s'exportent seules, avec une couleur de peau unie, et les objets
    faits d'un maillage partagé n'ont pas de modèle.
 
+### Depuis le téléphone ou l'émulateur (bouton « Téléphone »)
+
+Le bouton **Téléphone** copie directement, par ADB, les bundles que Free Fire a téléchargés sur un téléphone
+branché en USB (débogage USB activé) ou sur un émulateur (BlueStacks avec l'option « Android Debug Bridge »,
+LDPlayer avec « Débogage ADB », MuMu, Nox). Essaie ou équipe d'abord dans le jeu les skins qui manquent, puis
+clique sur **Récupérer** : seuls les fichiers absents du dossier des données sont copiés (dans
+`Appareil - <modèle>`), puis l'analyse est relancée. `adb.exe` est cherché dans le PATH, l'Android SDK et les
+dossiers des émulateurs ; son chemin peut aussi être indiqué dans les réglages. Quand un même bundle est présent
+plusieurs fois, la copie la plus récente est utilisée.
+
 ## FF Skin Studio (interface)
 
 Lance `FFSkinStudio.exe`. Une page s'ouvre dans le navigateur (`http://127.0.0.1:5178`). Au premier lancement,

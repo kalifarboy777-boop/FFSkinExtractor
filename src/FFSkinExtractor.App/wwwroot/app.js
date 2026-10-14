@@ -100,13 +100,14 @@ async function pollStatus() {
     $('version').textContent = s.version ? 'v' + s.version : '';
     $('credit').textContent = s.credit;
     renderBatch(s.batch);
+    renderPull(s.pull);
     if (s.state !== lastState) {
       if (s.state === 'Ready') await loadCatalog();
       if ((s.state === 'NotConfigured' || s.state === 'Error') && !$('settings').open) openSettings();
       lastState = s.state;
     }
   } catch { $('statusText').textContent = 'Serveur injoignable : relance FF Skin Studio.'; }
-  setTimeout(pollStatus, state.status?.state === 'Scanning' || state.status?.batch?.running ? 500 : 2500);
+  setTimeout(pollStatus, state.status?.state === 'Scanning' || state.status?.batch?.running || state.status?.pull?.running ? 500 : 2500);
 }
 
 function openSettings() {
@@ -114,6 +115,7 @@ function openSettings() {
   $('setData').value = s.dataFolder ?? '';
   $('setPackage').value = s.gamePackage ?? '';
   $('setExport').value = s.exportFolder ?? '';
+  $('setAdb').value = s.adbPath ?? '';
   const sug = $('suggestions');
   sug.innerHTML = '';
   for (const path of state.status?.suggestions ?? []) {
@@ -130,13 +132,73 @@ $('settingsCancel').onclick = () => $('settings').close();
 $('settingsForm').onsubmit = async e => {
   e.preventDefault();
   try {
-    await api('settings', { dataFolder: $('setData').value, gamePackage: $('setPackage').value, exportFolder: $('setExport').value });
+    await api('settings', { dataFolder: $('setData').value, gamePackage: $('setPackage').value, exportFolder: $('setExport').value, adbPath: $('setAdb').value });
     $('settings').close();
     lastState = null;
     state.catalog = { characters: [], items: [], bundles: [] };
     render();
   } catch (err) { toast(err.message, true); }
 };
+// ---------------------------------------------------------------------------
+// Récupération des skins depuis un téléphone ou un émulateur (ADB)
+// ---------------------------------------------------------------------------
+async function findDevices() {
+  const list = $('deviceList');
+  list.innerHTML = '';
+  list.append(el('div', 'muted small-text', 'Recherche des appareils…'));
+  $('deviceRefresh').disabled = true;
+  try {
+    const r = await (await api('devices')).json();
+    list.innerHTML = '';
+    if (!r.adb) {
+      list.append(el('div', 'small-text', "ADB est introuvable. Installe un émulateur (LDPlayer, BlueStacks, MuMu, Nox) ou les « Android SDK Platform-Tools » de Google, ou indique le chemin d'adb.exe dans les réglages."));
+      return;
+    }
+    if (!r.devices.length) {
+      list.append(el('div', 'small-text', "Aucun appareil trouvé. Vérifie le débogage USB (téléphone) ou l'option ADB de l'émulateur, puis cherche à nouveau."));
+      return;
+    }
+    for (const d of r.devices) {
+      const row = el('div', 'device-row');
+      const info = el('div', 'grow');
+      info.append(el('div', 'name', `${d.model}${d.emulator ? ' (émulateur)' : ''}`));
+      info.append(el('div', 'muted small-text', d.games.length ? d.games.map(g => g.endsWith('max') ? 'Free Fire MAX' : 'Free Fire').join(', ') : "Free Fire introuvable sur cet appareil"));
+      const b = el('button', 'primary', 'Récupérer');
+      b.type = 'button';
+      b.disabled = !d.games.length;
+      b.onclick = async () => {
+        try { await api('pull', { serial: d.serial }); setTimeout(pollStatus, 300); }
+        catch (err) { toast(err.message, true); }
+      };
+      row.append(info, b);
+      list.append(row);
+    }
+  } catch (err) { list.innerHTML = ''; toast(err.message, true); }
+  finally { $('deviceRefresh').disabled = false; }
+}
+
+$('openDevice').onclick = () => { $('device').showModal(); findDevices(); };
+$('deviceRefresh').onclick = findDevices;
+$('deviceClose').onclick = () => $('device').close();
+$('pullCancel').onclick = () => api('pull/cancel', {});
+
+let pullWasRunning = false;
+function renderPull(p) {
+  if (!p) return;
+  const box = $('pullBox');
+  const show = p.running || p.message || p.error;
+  box.classList.toggle('hidden', !show);
+  $('pullCancel').classList.toggle('hidden', !p.running);
+  box.querySelector('.progress > div').style.width = (p.total ? Math.round(p.done / p.total * 100) : 0) + '%';
+  $('pullText').textContent = p.error ? 'Erreur : ' + p.error
+    : p.running && p.total ? `${p.done} / ${p.total} fichier(s)…` : (p.message ?? '');
+  if (pullWasRunning && !p.running) {
+    if (p.error) toast(p.error, true);
+    else toast(p.copied ? `${p.copied} fichier(s) récupéré(s) : nouvelle analyse en cours.` : (p.message ?? 'Terminé.'));
+  }
+  pullWasRunning = p.running;
+}
+
 $('openFolder').onclick = () => api('open-folder', {}).catch(err => toast(err.message, true));
 
 

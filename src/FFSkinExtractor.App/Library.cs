@@ -154,8 +154,12 @@ public sealed partial class Library : IDisposable
             Message = "Recherche des bundles de tenues…";
             var files = Directory.EnumerateFiles(folder, "*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true })
                 .ToList();
-            var bundles = files.Where(GameBundle.IsOutfitBundle)
-                .Where(GameBundle.IsDownloaded).OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToList();
+            // Un même bundle peut être présent plusieurs fois (ancienne copie, version récupérée de l'appareil) :
+            // on garde la plus récente
+            var bundles = files.Where(GameBundle.IsOutfitBundle).Where(GameBundle.IsDownloaded)
+                .GroupBy(f => Path.GetFileName(f).Split('.')[0], StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.OrderByDescending(File.GetLastWriteTimeUtc).First())
+                .OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToList();
             BundleCount = bundles.Count;
             if (bundles.Count == 0) throw new InvalidDataException("Aucun bundle de tenue (optionalab_avatar…) dans ce dossier.");
 

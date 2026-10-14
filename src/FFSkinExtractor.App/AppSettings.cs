@@ -9,6 +9,8 @@ public sealed record AppSettings
     public string? DataFolder { get; init; }
     /// <summary>.xapk, .apk ou asset_pack_install_time.apk ; cherché dans le dossier des données si vide.</summary>
     public string? GamePackage { get; init; }
+    /// <summary>adb.exe pour récupérer les skins d'un téléphone ou d'un émulateur ; cherché automatiquement si vide.</summary>
+    public string? AdbPath { get; init; }
     public string ExportFolder { get; init; } = Path.Combine(Documents, "FFSkinStudio");
 
     static string Documents => Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments) is { Length: > 0 } d

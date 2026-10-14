@@ -26,6 +26,7 @@
     </div>
     <div class="top-actions">
       <button class="primary small-btn" id="openBrowser" title="Tous les objets d'ItemID2, page par page">Catalogue complet</button>
+      <button class="ghost" id="openDevice" title="Copier les skins téléchargés par Free Fire sur ton téléphone ou ton émulateur">Téléphone</button>
       <button class="ghost" id="openFolder" title="Ouvrir le dossier d'export">Dossier d'export</button>
       <button class="ghost" id="openSettings" title="Réglages">Réglages</button>
     </div>
@@ -160,11 +161,39 @@
       <label class="field">Dossier d'export
         <input id="setExport" type="text" spellcheck="false">
       </label>
+      <label class="field">ADB (facultatif)
+        <input id="setAdb" type="text" spellcheck="false" placeholder="Trouvé automatiquement (Android SDK, LDPlayer, BlueStacks, MuMu, Nox)">
+        <small class="muted">adb.exe, utilisé par « Récupérer du téléphone ».</small>
+      </label>
       <div class="dialog-actions">
         <button type="button" class="ghost" id="settingsCancel">Fermer</button>
         <button type="submit" class="primary" id="settingsSave">Enregistrer et analyser</button>
       </div>
     </form>
+  </dialog>
+
+  <!-- Récupération depuis un téléphone ou un émulateur -->
+  <dialog id="device">
+    <h2>Récupérer du téléphone ou de l'émulateur</h2>
+    <p class="muted small-text">Free Fire ne télécharge un skin que quand il s'affiche dans le jeu. Essaie ou équipe dans le jeu
+      les skins qui manquent, attends qu'ils apparaissent, puis récupère-les ici : seuls les nouveaux fichiers sont copiés,
+      et la liste se met à jour toute seule.</p>
+    <ol class="muted small-text device-help">
+      <li><b>Téléphone</b> : active le débogage USB (Paramètres › À propos › appuie 7 fois sur « Numéro de build »,
+        puis Options pour les développeurs › Débogage USB), branche-le et accepte la demande sur l'écran.</li>
+      <li><b>BlueStacks</b> : Paramètres › Avancé › active « Android Debug Bridge (ADB) ».
+        <b>LDPlayer</b> : Paramètres › Autres › « Débogage ADB » sur « Ouvrir la connexion locale ». MuMu et Nox marchent tels quels.</li>
+    </ol>
+    <div id="deviceList" class="device-list"></div>
+    <div class="batch hidden" id="pullBox">
+      <div class="progress big"><div></div></div>
+      <div class="muted small-text" id="pullText"></div>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="ghost" id="deviceClose">Fermer</button>
+      <button type="button" class="ghost hidden" id="pullCancel">Annuler</button>
+      <button type="button" class="primary" id="deviceRefresh">Chercher les appareils</button>
+    </div>
   </dialog>
 
   <script type="module" src="app.js"></script>
