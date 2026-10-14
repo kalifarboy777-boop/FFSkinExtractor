@@ -152,6 +152,9 @@ Beaucoup d'objets n'ont pas de slot à leur nom : le jeu les assemble à partir 
 L'appli relie les hashs aux slots et overlays lus dans les bundles, crée une tenue par recette (nommée d'après son
 overlay : `Male_Top_Cos_Goldenleo_A_Overlay_N` → `Cos_Goldenleo_A`) et prend chaque maillage dans le bundle de son
 slot, les textures dans celui de l'overlay. Les slots `_PBR` d'une recette désignent le slot `_N` (même maillage).
+Les vêtements simples (débardeur `male_clothes_undershirt_N`, T-shirt col V `Male_Tshirt_V-Neck_N`) ont leur slot
+dans les données de base de l'APK et non dans un bundle : leurs recettes y renvoient. Le hash `0x001eb0b5` et ses
+semblables désignent l'overlay du corps de base, posé sur les morceaux de peau.
 
 
 ## Maquillage et racines de cheveux (overlays sans maillage)

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using FFSkinExtractor.Core;
 using FFSkinExtractor.Core.Items;
+using FFSkinExtractor.Core.Uma;
 
 namespace FFSkinExtractor.App;
 
@@ -82,7 +83,7 @@ public enum LibraryState { NotConfigured, Scanning, Ready, Error }
 /// Bibliothèque des tenues : recherche des bundles et du paquet du jeu, inventaire des tenues,
 /// liaison aux ID d'objets et assemblage des modèles à la demande.
 /// </summary>
-public sealed class Library : IDisposable
+public sealed partial class Library : IDisposable
 {
     public static readonly string[] PieceOrder = ["Top", "Bottom", "Shoe", "Head", "Hair", "Accessory", "Hands", "Other"];
     const int OpenBundleLimit = 6;
@@ -102,6 +103,8 @@ public sealed class Library : IDisposable
     Dictionary<long, List<(string Gender, string Name)>> _facePaintIndex = [];
     // ID d'objet → tenue et pièce, d'après la table « Clothes » et les recettes du jeu
     Dictionary<long, List<(string Key, string Piece)>> _tableLinks = [];
+    // Slots des vêtements de base (débardeur, T-shirt col V…) rangés dans les données de l'APK, par slotName
+    Dictionary<string, (DataObject Obj, SlotInfo Info)> _apkSlots = [];
     Task<GameData?>? _gameData;
 
     public AppSettings Settings { get; private set; }
@@ -202,6 +205,7 @@ public sealed class Library : IDisposable
             for (int i = 0; i < bundles.Count; i++)
                 foreach (var (_, overlay) in results[i]?.Overlays ?? [])
                     overlayByHash.TryAdd(Crc32.Hash(overlay), (bundles[i], overlay));
+            _apkSlots = AddApkParts(data, slotRefs, overlayByHash);
             var recipes = await recipeBytes is { } rb ? RecipeTable.Parse(rb, slotRefs.Keys.ToHashSet()) : RecipeTable.Empty;
             var byRecipe = new Dictionary<uint, (string Key, string Piece)>();
             entries.AddRange(RecipeEntries(recipes, slotRefs, overlayByHash, byRecipe));
@@ -305,6 +309,43 @@ public sealed class Library : IDisposable
         }).ToList();
 
     const string RecipeLabel = "recette";
+    // Source des slots et overlays rangés dans les données de l'APK plutôt que dans un bundle
+    const string ApkSource = "apk";
+
+    [GeneratedRegex(@"(^|_)base_", RegexOptions.IgnoreCase)]
+    private static partial Regex BaseOverlay();
+
+    [GeneratedRegex(@"_N(_\d+)?$")]
+    private static partial Regex HighDetailSlot();
+
+    /// <summary>
+    /// Ajoute aux index les slots et overlays des données de base de l'APK : les vêtements simples
+    /// (débardeur, T-shirt col V…) y ont leur maillage, et leurs recettes y renvoient.
+    /// </summary>
+    static Dictionary<string, (DataObject, SlotInfo)> AddApkParts(GameData? data,
+        Dictionary<uint, SlotRef> slots, Dictionary<uint, (string Bundle, string Overlay)> overlays)
+    {
+        var apkSlots = new Dictionary<string, (DataObject, SlotInfo)>(StringComparer.Ordinal);
+        if (data == null) return apkSlots;
+        foreach (var o in data.FindAll(n => n.EndsWith("_Slot", StringComparison.Ordinal) || n.Contains("overlay", StringComparison.OrdinalIgnoreCase)))
+        {
+            if (o.Type != AssetsTools.NET.Extra.AssetClassID.MonoBehaviour) continue;
+            if (!o.Name.EndsWith("_Slot", StringComparison.Ordinal))
+            {
+                overlays.TryAdd(Crc32.Hash(o.Name), (ApkSource, o.Name));
+                continue;
+            }
+            SlotInfo info;
+            try { info = UmaAssets.ParseSlot(data.Raw(o)); }
+            catch (Exception) { continue; }
+            var words = info.SlotName.Split('_', 2);
+            string? gender = words[0].ToLowerInvariant() switch { "male" => "Male", "female" => "Female", _ => null };
+            if (gender == null || words.Length < 2 || !apkSlots.TryAdd(info.SlotName, (o, info))) continue;
+            slots.TryAdd(Crc32.Hash(info.SlotName), new SlotRef(info.SlotName, ApkSource, HighDetailSlot().IsMatch(info.SlotName),
+                gender, $"{gender}:{ApkSource}:{info.SlotName}", OutfitReader.PieceOf(words[1])));
+        }
+        return apkSlots;
+    }
     // Rapprochement par le nom sans mot en trop dans l'icône : « warringstates_purple » ne prend pas le coloris de base
     const int MinNameScore = 10;
 
@@ -347,7 +388,9 @@ public sealed class Library : IDisposable
         {
             var first = slots[pairs[0].Slot];
             if (!RecipePieces.Contains(first.Piece) || IsAccessoryOnly(first.SlotName)) continue;
-            string? named = pairs.Select(p => overlays.TryGetValue(p.Overlay, out var o) ? o.Overlay : null).FirstOrDefault(o => o != null);
+            // L'overlay qui nomme la recette : pas celui du corps de base (« Male_Base_body… ») que reçoivent les morceaux de peau
+            string? named = pairs.Select(p => overlays.TryGetValue(p.Overlay, out var o) ? o.Overlay : null)
+                .FirstOrDefault(o => o != null && !BaseOverlay().IsMatch(o));
             if (named == null)
             {
                 byRecipe[hash] = (first.Key, first.Piece);
@@ -682,7 +725,7 @@ public sealed class Library : IDisposable
     {
         var recipe = data.Find($"{gender}BaseRecipe_max_N", AssetsTools.NET.Extra.AssetClassID.MonoBehaviour);
         if (recipe == null) return null;
-        foreach (var (_, overlay) in FFSkinExtractor.Core.Uma.UmaAssets.ParseBaseRecipe(data.Raw(recipe.Value)))
+        foreach (var (_, overlay) in UmaAssets.ParseBaseRecipe(data.Raw(recipe.Value)))
             if (overlay != null && HeadPaint.Classify(overlay) is { Kind: HeadLayerKind.HairRoot } c) return c.Name;
         return null;
     }
@@ -860,7 +903,8 @@ public sealed class Library : IDisposable
         var parts = new List<OutfitPart>();
         foreach (var rp in entry.Recipe!)
         {
-            var part = OpenOutfits(rp.SlotBundle, rp.SlotHd, skin).SelectMany(o => o.Parts).FirstOrDefault(p => p.SlotName == rp.SlotName);
+            var part = rp.SlotBundle == ApkSource ? ApkPart(rp.SlotName, entry.Gender, skin)
+                : OpenOutfits(rp.SlotBundle, rp.SlotHd, skin).SelectMany(o => o.Parts).FirstOrDefault(p => p.SlotName == rp.SlotName);
             if (part == null) continue;
             var own = part.TextureSource;
             var textures = rp.Overlay == null || part.IsSkin ? own
@@ -869,6 +913,26 @@ public sealed class Library : IDisposable
         }
         if (parts.Count == 0) throw new KeyNotFoundException($"{entry.Name} : slots de la recette introuvables");
         return new Outfit(entry.Name, entry.Gender, parts);
+    }
+
+    // Pièce d'un slot des données de l'APK (mêmes règles de peau et de matériau que dans les bundles)
+    OutfitPart? ApkPart(string slotName, string gender, SkinTextures? skin)
+    {
+        if (_gameData is not { IsCompletedSuccessfully: true, Result: { } data } || !_apkSlots.TryGetValue(slotName, out var slot)) return null;
+        var (obj, info) = slot;
+        if (data.Resolve(obj.File, info.Mesh.FileId, info.Mesh.PathId) is not { } meshObj) return null;
+        UmaMesh mesh;
+        try { mesh = UmaMeshDecoder.Decode(meshObj.Name, data.Raw(meshObj)); }
+        catch (Exception e) when (e is InvalidDataException or ArgumentOutOfRangeException or IndexOutOfRangeException) { return null; }
+        string material = data.Resolve(obj.File, info.Material.FileId, info.Material.PathId)?.Name ?? "";
+        bool isSkin = HighDetailSlot().IsMatch(slotName)
+            ? material.Contains("AvatarSkin") && !material.Contains("Emit") && mesh.Submeshes.Count > 1
+            : UvCoverage.SkinSubmeshes(mesh).Contains(info.SubmeshIndex);
+        var kind = material.Contains("CutOff", StringComparison.OrdinalIgnoreCase) || material.Contains("AvatarHair") ? MaterialKind.Cutout
+            : material.Contains("Glass", StringComparison.OrdinalIgnoreCase) ? MaterialKind.Transparent
+            : MaterialKind.Opaque;
+        var textures = isSkin ? skin?.For(gender) ?? TextureSet.Empty : TextureSet.Empty;
+        return new OutfitPart(slotName, mesh, info.SubmeshIndex, textures, isSkin, kind, OutfitReader.PieceOf(slotName.Split('_', 2)[^1]));
     }
 
     List<Outfit> OpenOutfits(string path, bool highDetail, SkinTextures? skin)
@@ -920,15 +984,20 @@ public sealed class Library : IDisposable
         TextureSet? set = null;
         try
         {
-            using var bundle = new GameBundle(path);
-            var o = bundle.UmaObjects().FirstOrDefault(x => x.Name == overlay);
-            if (o != null)
+            if (path == ApkSource)
+                set = _gameData is { IsCompletedSuccessfully: true, Result: { } data } ? data.Overlay(overlay) : null;
+            else
             {
-                var refs = FFSkinExtractor.Core.Uma.UmaAssets.OverlayTextures(o.Raw, p => p.FileId != 0
-                    || bundle.GetInfo(p.PathId)?.TypeId == (int)AssetsTools.NET.Extra.AssetClassID.Texture2D);
-                set = TextureSet.FromOverlay(refs.Select(p => p.FileId != 0
-                    ? (bundle.ExternalName(p.FileId) is { } cab ? ExternalTexture(cab, p.PathId) : null)
-                    : bundle.GetInfo(p.PathId) is { } info ? TextureDecoder.Decode(bundle, info) : null).ToList());
+                using var bundle = new GameBundle(path);
+                var o = bundle.UmaObjects().FirstOrDefault(x => x.Name == overlay);
+                if (o != null)
+                {
+                    var refs = UmaAssets.OverlayTextures(o.Raw, p => p.FileId != 0
+                        || bundle.GetInfo(p.PathId)?.TypeId == (int)AssetsTools.NET.Extra.AssetClassID.Texture2D);
+                    set = TextureSet.FromOverlay(refs.Select(p => p.FileId != 0
+                        ? (bundle.ExternalName(p.FileId) is { } cab ? ExternalTexture(cab, p.PathId) : null)
+                        : bundle.GetInfo(p.PathId) is { } info ? TextureDecoder.Decode(bundle, info) : null).ToList());
+                }
             }
         }
         catch (Exception) { set = null; }
