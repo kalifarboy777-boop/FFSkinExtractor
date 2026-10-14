@@ -206,7 +206,13 @@ public static partial class OutfitReader
                 ? material.Contains("AvatarSkin") && !material.Contains("Emit") && mesh.Submeshes.Count > 1
                 : IsSkinSubmesh(slot.MeshPathId, mesh, slot.SubmeshIndex));
             var overlay = dedicated ?? main;
+            // L'overlay au nom exact du slot peut être rangé dans un autre bundle (« Male_Shoe_Cos_Hip_hop2_Overlay_N ») :
+            // il passe avant un overlay de ce bundle trouvé seulement par un synonyme (« Male_Body_… »)
+            bool bySynonym = dedicated == null && main != null && Variants(slotKey).Take(2).All(k => FindOverlay(k, null) == null);
+            var exactKeys = Variants(slotKey).Take(2).Select(KeyString).Distinct().ToList();
             var textures = isSkin ? new Lazy<TextureSet>(options.Skin?.For(gender) ?? TextureSet.Empty)
+                : bySynonym && options.ExternalOverlay != null
+                    ? new Lazy<TextureSet>(() => options.ExternalOverlay(exactKeys) ?? Textures(overlay))
                 : overlay != null ? new Lazy<TextureSet>(() => Textures(overlay))
                 : new Lazy<TextureSet>(() => options.ExternalOverlay?.Invoke(Variants(slotKey).Select(KeyString).Distinct().ToList()) ?? TextureSet.Empty);
             var kind = material.Contains("CutOff", StringComparison.OrdinalIgnoreCase) || material.Contains("AvatarHair") ? MaterialKind.Cutout

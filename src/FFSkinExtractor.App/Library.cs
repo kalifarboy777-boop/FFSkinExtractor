@@ -581,8 +581,9 @@ public sealed partial class Library : IDisposable
             if (!index.TryGetValue(item.Id, out var list)) index[item.Id] = list = [];
             if (!list.Contains((key, piece))) list.Add((key, piece));
         }
+        var tableLinks = WithSetSiblings(_tableLinks, unique);
         bool InTable(long id, string gender) =>
-            _tableLinks.TryGetValue(id, out var links) && links.Any(l => l.Key.StartsWith(gender + ":"));
+            tableLinks.TryGetValue(id, out var links) && links.Any(l => l.Key.StartsWith(gender + ":"));
 
         foreach (var o in unique)
         {
@@ -621,7 +622,7 @@ public sealed partial class Library : IDisposable
         {
             // Objets reliés exactement par la table « Clothes » du jeu et ses recettes
             var byKey = unique.ToDictionary(o => o.Key);
-            foreach (var (id, links) in _tableLinks)
+            foreach (var (id, links) in tableLinks)
                 if (Catalog.Get(id) is { } item)
                     foreach (var (key, piece) in links)
                         if (byKey.TryGetValue(key, out var o) && o.PieceSources.ContainsKey(piece) && SlotOf(piece, o.IsCharacter) is { } slot)
@@ -659,6 +660,32 @@ public sealed partial class Library : IDisposable
     }
 
     Dictionary<long, List<(string Key, string Piece)>> _itemIndex = [];
+
+    /// <summary>
+    /// La table « Clothes » ne relie que les hauts. Les autres pièces du même ensemble (« The Streets (Shoes) »,
+    /// « The Streets (Pants) ») suivent le haut (« The Streets (Jacket) ») vers la même tenue, plutôt qu'une tenue
+    /// au nom voisin (« Cos_Hip_hop » au lieu de « Cos_Hip_hop2 »).
+    /// </summary>
+    Dictionary<long, List<(string Key, string Piece)>> WithSetSiblings(
+        Dictionary<long, List<(string Key, string Piece)>> links, List<OutfitEntry> outfits)
+    {
+        if (Catalog == null) return links;
+        var result = links.ToDictionary(kv => kv.Key, kv => kv.Value.ToList());
+        var byKey = outfits.ToDictionary(o => o.Key);
+        foreach (var set in Catalog.Items.Where(i => i.Type == "CLOTHES" && i.Gender != null && i.Name.EndsWith(')'))
+                     .GroupBy(i => (i.Gender, Name: SetName(i.Name))))
+        {
+            var keys = set.SelectMany(i => links.GetValueOrDefault(i.Id) ?? []).Select(l => l.Key)
+                .Where(k => k.StartsWith(set.Key.Gender + ":")).Distinct().ToList();
+            if (keys.Count != 1 || !byKey.TryGetValue(keys[0], out var outfit)) continue;
+            foreach (var item in set)
+                if (!result.ContainsKey(item.Id) && outfit.PieceSources.ContainsKey(item.Piece))
+                    result[item.Id] = [(keys[0], item.Piece)];
+        }
+        return result;
+    }
+
+    static string SetName(string name) => name[..name.LastIndexOf('(')].Trim();
 
     static readonly Dictionary<string, string[]> BrowseTypes = new()
     {
