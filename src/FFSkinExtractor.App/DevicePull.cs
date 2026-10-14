@@ -120,6 +120,7 @@ public sealed class DevicePull
         {
             try
             {
+                await SaveListingAsync(adb, device, dataFolder, ct);
                 var copied = await PullAsync(adb, device, dataFolder, LocalFiles(dataFolder), null, ct);
                 if (copied.Count > 0) done(copied);
             }
@@ -181,6 +182,21 @@ public sealed class DevicePull
         return true;
     }
 
+    // Liste de tous les fichiers du jeu sur l'appareil (taille et chemin), pour comprendre un skin introuvable
+    static async Task SaveListingAsync(string adb, AndroidDevice device, string dataFolder, CancellationToken ct)
+    {
+        string dir = Path.Combine(dataFolder, "Appareil - " + SafeName(device.Model));
+        Directory.CreateDirectory(dir);
+        var text = new StringBuilder();
+        foreach (var pkg in device.Games)
+        {
+            var (_, listing) = await Adb(adb, ["-s", device.Serial, "shell",
+                $"find /sdcard/Android/data/{pkg} /sdcard/Android/obb/{pkg} -type f -exec stat -c '%s|%y|%n' {{}} +"], TimeSpan.FromMinutes(2), ct);
+            text.Append(listing);
+        }
+        await File.WriteAllTextAsync(Path.Combine(dir, "fichiers-appareil.txt"), text.ToString(), ct);
+    }
+
     static HashSet<(string, long)> LocalFiles(string dataFolder) =>
         Directory.EnumerateFiles(dataFolder, "optionalab_*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true })
             .Select(f => (Path.GetFileName(f).ToLowerInvariant(), new FileInfo(f).Length)).ToHashSet();
@@ -194,6 +210,7 @@ public sealed class DevicePull
         Dictionary<string, long>? seen, CancellationToken ct)
     {
         var wanted = new List<(string Remote, string Relative, long Size)>();
+        int onDevice = 0;
         foreach (var pkg in device.Games)
         {
             string root = $"/sdcard/Android/data/{pkg}/files/contentcache";
@@ -219,6 +236,7 @@ public sealed class DevicePull
                 // Téléchargements en cours (« Temp ») : incomplets
                 if (relative.StartsWith("Temp/", StringComparison.OrdinalIgnoreCase)) continue;
                 if (!GameBundle.IsOutfitBundle(relative)) continue;
+                onDevice++;
                 string fileName = Path.GetFileName(relative).ToLowerInvariant();
                 if (size >= 0 ? local.Contains((fileName, size)) : local.Any(l => l.Item1 == fileName)) continue;
                 if (seen != null)
@@ -234,7 +252,11 @@ public sealed class DevicePull
         Total = wanted.Count;
         if (wanted.Count == 0)
         {
-            if (seen == null) Message = "Aucun nouveau skin : tout est déjà dans le dossier des données.";
+            // Rien vu du tout : dossier du jeu vide ou illisible, ce n'est pas « tout est déjà là »
+            if (onDevice == 0)
+                throw new IOException($"Aucun fichier de skin trouvé sur {device.Model} dans Android/data/{string.Join(", ", device.Games)}/files/contentcache. "
+                    + "Le jeu range peut-être ses téléchargements ailleurs sur cet appareil, ou Android bloque la lecture de ce dossier.");
+            if (seen == null) Message = $"Aucun nouveau skin : les {onDevice} fichiers de skins de {device.Model} sont déjà dans le dossier des données.";
             return copied;
         }
         Done = 0;
