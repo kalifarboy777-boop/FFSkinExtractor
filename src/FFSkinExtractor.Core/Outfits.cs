@@ -57,6 +57,8 @@ public static partial class OutfitReader
     // Mots d'overlays d'effets (animations de texture, émission) : ce ne sont pas des coloris
     static readonly string[] EffectWords = ["vfx", "fx", "scroll", "tex", "glow", "emit", "flow", "mask", "light"];
 
+    static readonly string[] GlassWords = ["glass", "glasses", "galss"];
+
     // Mots qui varient entre le nom d'un slot et celui de son overlay sans changer la pièce
     static readonly HashSet<string> NoiseWords = new(StringComparer.OrdinalIgnoreCase)
         { "slot", "overlay", "lobby", "ingame", "cutoff", "mesh" };
@@ -186,7 +188,7 @@ public static partial class OutfitReader
             int slotIndex = slotKey.Index ?? 0;
             // Overlay propre à ce sous-maillage (« top_ingame_1 » → « top_2_lobby_overlay »),
             // sinon l'overlay principal de la pièce.
-            var dedicated = slotIndex > 0 ? FindOverlay(slotKey, slotIndex + 1) : null;
+            var dedicated = slotIndex > 0 ? FindOverlay(slotKey, slotIndex + 1) ?? GlassOverlay(slotKey) : null;
             var main = FindAny(slotKey);
             string material0 = byId.TryGetValue(slot.MaterialPathId, out var mo0) ? mo0.Name : "";
             // Sous-maillage découpé (barbe, mèches) : overlay « CutOff » de la tenue (« Male_Accessory_CutOff_Cos_Seaman »)
@@ -264,13 +266,25 @@ public static partial class OutfitReader
         UmaObject? ResolveOverlay(Key slotKey)
         {
             int slotIndex = slotKey.Index ?? 0;
-            return (slotIndex > 0 ? FindOverlay(slotKey, slotIndex + 1) : null) ?? FindAny(slotKey);
+            return (slotIndex > 0 ? FindOverlay(slotKey, slotIndex + 1) ?? GlassOverlay(slotKey) : null) ?? FindAny(slotKey);
         }
 
         UmaObject? FindAny(Key slotKey)
         {
             foreach (var k in Variants(slotKey))
                 if (FindOverlay(k, null) is { } o) return o;
+            return null;
+        }
+
+        // Second morceau en verre (visière, lunettes) : overlay au nom du slot plus « Glass »
+        // (« Male_Top_Cos_Fishtank_N_1 » → « Male_Top_Cos_Glass_Fishtank_Overlay_N »)
+        UmaObject? GlassOverlay(Key slotKey)
+        {
+            foreach (var glass in GlassWords)
+            {
+                var words = string.Join('_', slotKey.Words.Split('_').Append(glass).OrderBy(w => w, StringComparer.Ordinal));
+                if (FindOverlay(slotKey with { Words = words, Index = null }, null) is { } o) return o;
+            }
             return null;
         }
 

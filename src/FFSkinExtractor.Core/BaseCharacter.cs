@@ -73,6 +73,49 @@ public static class BaseCharacter
     {
         var chosenList = chosen.ToList();
         var replaced = chosenList.Select(p => p.Piece).ToHashSet();
-        return baseParts.Where(p => !replaced.Contains(p.Piece)).Concat(chosenList).ToList();
+        var chosenParts = chosenList.Where(p => !p.IsSkin).ToList();
+        return baseParts.Where(p => !replaced.Contains(p.Piece) && !Covered(p, chosenParts)).Concat(chosenList).ToList();
+    }
+
+    const float CoverMargin = 0.03f;
+    // Écart entre la semelle des chaussures de base et le bas d'une pièce qui descend jusqu'au sol (pattes, pieds)
+    const float SoleGap = 0.06f;
+
+    /// <summary>
+    /// Pièce de base cachée sous une pièce choisie, comme dans le jeu : cheveux sous un masque intégral
+    /// (90 % de leurs sommets dans la boîte du masque), chaussures sous une combinaison qui descend jusqu'aux
+    /// pieds (« 24K Woof » et ses pattes).
+    /// </summary>
+    static bool Covered(OutfitPart basePart, List<OutfitPart> chosen)
+    {
+        if (basePart.IsSkin || basePart.Piece is not ("Hair" or "Shoe")) return false;
+        var points = Vertices(basePart).ToList();
+        if (points.Count == 0) return false;
+        if (basePart.Piece == "Shoe")
+        {
+            float sole = points.Min(v => v.Y);
+            return chosen.Any(c => c.Piece is "Top" or "Bottom" && Vertices(c).Select(v => v.Y).DefaultIfEmpty(float.MaxValue).Min() <= sole + SoleGap);
+        }
+        foreach (var c in chosen.Where(c => c.Piece is "Head" or "Accessory"))
+        {
+            var (min, max) = Bounds(c);
+            int inside = points.Count(v => v.X >= min.X - CoverMargin && v.X <= max.X + CoverMargin
+                && v.Y >= min.Y - CoverMargin && v.Y <= max.Y + CoverMargin && v.Z >= min.Z - CoverMargin && v.Z <= max.Z + CoverMargin);
+            if (inside >= 0.9 * points.Count) return true;
+        }
+        return false;
+    }
+
+    static IEnumerable<System.Numerics.Vector3> Vertices(OutfitPart p) =>
+        p.SubmeshIndex < p.Mesh.Submeshes.Count
+            ? p.Mesh.Submeshes[p.SubmeshIndex].Distinct().Where(i => i < p.Mesh.Positions.Length).Select(i => p.Mesh.Positions[i])
+            : [];
+
+    static (System.Numerics.Vector3 Min, System.Numerics.Vector3 Max) Bounds(OutfitPart p)
+    {
+        var min = new System.Numerics.Vector3(float.MaxValue);
+        var max = new System.Numerics.Vector3(float.MinValue);
+        foreach (var v in Vertices(p)) { min = System.Numerics.Vector3.Min(min, v); max = System.Numerics.Vector3.Max(max, v); }
+        return (min, max);
     }
 }

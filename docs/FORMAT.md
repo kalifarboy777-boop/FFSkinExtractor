@@ -39,6 +39,9 @@ Le nom du matériau donne le rendu :
 Les slots en jeu (sans `_N`) utilisent tous `DTSAvatarCommon` : la peau y est reconnue par la place du
 sous-maillage dans la texture (zone de peau du corps de base).
 
+Un second sous-maillage en verre (visière, lunettes, bocal : slot `…_N_1`) a son propre overlay, au nom
+du slot plus `Glass` (ou `Glasses`, `Galss`) : `Male_Top_Cos_Fishtank_N_1` → `Male_Top_Cos_Glass_Fishtank_Overlay_N`.
+
 ### OverlayDataAsset
 
 Se termine par `textureList` (`i32 count` + `count` × PPtr) puis le PPtr du matériau.

@@ -26,6 +26,8 @@ public sealed class UmaMesh
     /// <summary>Positions en repère Unity (Y vers le haut, Z vers l'avant), à l'échelle d'export (×2).</summary>
     public required Vector3[] Positions { get; init; }
     public required Vector2[] UVs { get; init; }
+    /// <summary>UV lus dans le tableau standard d'Unity (flottants) plutôt que dans les données compressées.</summary>
+    public bool PlainUv { get; init; }
     /// <summary>Null quand le maillage n'a pas de poids (il est alors attaché aux os les plus proches à l'export).</summary>
     public VertexWeights[]? Weights { get; init; }
     /// <summary>Triangles de chaque sous-maillage (indices de sommets).</summary>
@@ -200,7 +202,7 @@ public static class UmaMeshDecoder
 
         return new UmaMesh
         {
-            Name = name, RootBoneName = rootBone, Positions = pos, UVs = uv, Weights = weights, Submeshes = subs,
+            Name = name, RootBoneName = rootBone, Positions = pos, UVs = uv, PlainUv = ReferenceEquals(uv, plainUv), Weights = weights, Submeshes = subs,
             OwnBoneHashes = ownHashes, ExtraBoneHashes = extras, Bones = bones,
             OwnBindPoses = bindPoses, ExtraBindPoses = extraBindPoses,
         };
