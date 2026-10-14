@@ -371,7 +371,8 @@ public sealed partial class Library : IDisposable
     // Source des slots et overlays rangés dans les données de l'APK plutôt que dans un bundle
     const string ApkSource = "apk";
 
-    [GeneratedRegex(@"(^|_)base_", RegexOptions.IgnoreCase)]
+    // Overlays de la peau : corps de base, ou peau propre à la tenue (« male_body_cos_summer20 », « Skin_Cos_Fastbreaking »)
+    [GeneratedRegex(@"(^|_)(base|body|skin)_", RegexOptions.IgnoreCase)]
     private static partial Regex BaseOverlay();
 
     [GeneratedRegex(@"_N(_\d+)?$")]
@@ -465,7 +466,8 @@ public sealed partial class Library : IDisposable
                     : new RecipePart(s.SlotName, s.Bundle, s.Hd, null, null);
             }).ToList();
             var pieces = new List<PieceEntry> { new(first.Piece, parts.Select(p => p.SlotName).Distinct().ToList(), null) };
-            var entry = new OutfitEntry($"{(first.Hd ? "hd" : "lo")}:{RecipeLabel}:{first.Gender}:{name}", first.Gender, name,
+            // Une recette par pièce : le haut, le bas et les chaussures d'une même tenue se réunissent ensuite par leur nom
+            var entry = new OutfitEntry($"{(first.Hd ? "hd" : "lo")}:{RecipeLabel}-{first.Piece}:{first.Gender}:{name}", first.Gender, name,
                 DisplayName(name, pieces, null), first.Hd, RecipeLabel, pieces, null) { Recipe = parts };
             result.Add(entry);
             byRecipe[hash] = (entry.Key, first.Piece);

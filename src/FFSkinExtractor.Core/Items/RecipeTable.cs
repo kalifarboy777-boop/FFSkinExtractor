@@ -31,7 +31,8 @@ public sealed class RecipeTable
     public static RecipeTable Parse(ReadOnlySpan<byte> data, IReadOnlySet<uint> slots)
     {
         var recipes = new Dictionary<uint, List<RecipePair>>();
-        bool IsHeader(ReadOnlySpan<byte> d, int p) => p + 3 <= d.Length && HeaderFlags.Contains(d[p]) && d[p + 2] is 3 or 5;
+        // En-tête : drapeau, petit entier, type de pièce (2 cheveux, 3 accessoire, 4 visage, 5 haut, 6 bas, 7 chaussures)
+        bool IsHeader(ReadOnlySpan<byte> d, int p) => p + 3 <= d.Length && HeaderFlags.Contains(d[p]) && d[p + 1] <= 3 && d[p + 2] is >= 2 and <= 7;
         uint U32(ReadOnlySpan<byte> d, int p) => BinaryPrimitives.ReadUInt32LittleEndian(d[p..]);
 
         int p = 4;

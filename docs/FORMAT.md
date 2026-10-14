@@ -146,7 +146,11 @@ Beaucoup d'objets n'ont pas de slot à leur nom : le jeu les assemble à partir 
 - `ClothesRecipesBytes` (TextAsset du bundle `assets/android/gameassetbundles/config/clothesrecipesbytes.*`
   de l'APK principal, rangé dans le `.xapk`) : non chiffré, les noms y sont écrits en CRC32 (polynôme
   0xEDB88320, comme `zlib.crc32`). Une recette : `uint32 crc32(nom)`, un en-tête de 4 à 16 octets dont le premier
-  vaut 0x01, 0x21, 0x61… et le troisième 3 ou 5, puis des paires `uint32 crc32(slotName), uint32 crc32(overlay)`.
+  vaut 0x01, 0x21, 0x41, 0x62…, le deuxième 0 à 3 et le troisième le type de pièce (2 cheveux, 3, 4, 5 haut, 6 bas,
+  7 chaussures), puis des paires `uint32 crc32(slotName), uint32 crc32(overlay)`. Les sous-slots de peau prennent
+  l'overlay du corps (`male_body_cos_summer20_Overlay`) : la tenue est nommée d'après l'autre overlay.
+  Exemple : `male_shoe_cos_summer20` = (`Male_Shoe_Cos_Swimsuit`, `male_shoe_cos_summer20_Overlay`), tous deux
+  dans les données de base de l'APK.
   Un overlay inconnu (0x001eb0b5…) laisse au slot ses propres textures. Exemple :
   `male_tshirt_camo_Recipe_N_004` = (`male_clothes_tshirt_N`, `male_tshirt_camo_004_Overlay_N`).
 - Table `Clothes` (TextAsset des données de base) : pour chaque haut (ID 203…), `int32 ID, int32 type, octet 3`, puis
