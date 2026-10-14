@@ -436,30 +436,41 @@ function renderCharacterPicker() {
 }
 
 // ---- Emote ----
+const EMOTE_CATEGORIES = ['Emotes', "Emotes d'entrée", 'Super emotes', 'Look changer', 'Poses de tenue', 'Autres'];
 const currentEmote = () => state.emotes.find(e => e.key === state.emote) ?? null;
 const genderLabel = g => g === 'Male' ? 'Homme' : 'Femme';
+const emoteSub = e => !e.available ? 'Pas dans tes fichiers'
+  : e.genders.includes(state.gender) ? `${e.category}${e.id ? ' · ID ' + e.id : ''}`
+  : `${e.category} · animation ${genderLabel(e.genders[0]).toLowerCase()}`;
 function renderEmotePicker() {
   const host = $('emotePicker');
   host.innerHTML = '';
   const e = currentEmote();
   const btn = el('button', 'choice');
   btn.type = 'button';
-  btn.append(thumb(null, e ? initials(e.name) : '–'));
+  btn.append(thumb(e?.icon, e ? initials(e.name) : '–'));
   const body = el('div');
   body.style.minWidth = '0';
   body.append(el('div', 'title', e ? e.name : 'Aucune emote'));
-  body.append(el('div', 'sub', e ? e.genders.map(genderLabel).join(' et ') : `${state.emotes.length} emotes lisibles`));
+  body.append(el('div', 'sub', e ? emoteSub(e) : `${state.emotes.filter(x => x.available).length} emotes dans tes fichiers`));
   btn.append(body, el('span', 'chev', '▾'));
   btn.onclick = () => {
     if (host.classList.contains('open')) return closePickers();
-    const options = [{ value: '', title: 'Aucune emote', sub: 'Pose de repos' },
+    const options = [{ value: '', title: 'Aucune emote', sub: 'Pose de repos', category: '*' },
       ...state.emotes.map(x => ({
-        value: x.key, title: x.name,
-        sub: x.genders.includes(state.gender) ? x.genders.map(genderLabel).join(' et ') : `Animation ${genderLabel(x.genders[0]).toLowerCase()} seulement`,
+        value: x.key, title: x.name, sub: emoteSub(x), icon: x.icon, missing: !x.available, category: x.category,
+        tag: x.available ? null : 'Absente',
       }))];
+    const tabs = [{ key: 'all', label: 'Toutes', filter: o => !o.missing },
+      ...EMOTE_CATEGORIES.map(c => ({ key: c, label: c, filter: o => !o.missing && (o.category === c || o.category === '*') }))
+        .filter(t => options.some(o => o.category === t.key)),
+      { key: 'missing', label: 'Absentes', filter: o => o.missing }];
     showPopover(host, {
-      options, selected: state.emote ?? '', placeholder: 'Rechercher une emote…',
-      onPick: o => { state.emote = o.value || null; render(); requestModel(); },
+      options, selected: state.emote ?? '', placeholder: 'Rechercher une emote…', tabs,
+      onPick: o => {
+        if (o.missing) return toast("Cette emote n'est pas dans tes fichiers : ouvre-la une fois dans le jeu, puis relance l'analyse.", true);
+        state.emote = o.value || null; render(); requestModel();
+      },
     });
   };
   host.append(btn);
@@ -678,11 +689,24 @@ const clock = new THREE.Clock();
 let mixer = null, emoteAction = null;
 renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
-  if (mixer && emoteAction && !emoteAction.paused) mixer.update(dt);
+  if (mixer && emoteAction && !emoteAction.paused) { mixer.update(dt); follow(); }
   if (view.rotate && model) model.rotation.y += 0.006;
   controls.update();
   renderer.render(scene, camera);
 });
+
+// Pendant une emote, la caméra suit le bassin : certaines emotes (entrées, super emotes) déplacent le personnage loin
+let followBone = null, followLast = null;
+function follow() {
+  if (!followBone) return;
+  const p = followBone.getWorldPosition(new THREE.Vector3());
+  if (followLast) {
+    const d = p.clone().sub(followLast);
+    controls.target.add(d);
+    camera.position.add(d);
+  }
+  followLast = p;
+}
 
 function frame(object, keepAngle = false) {
   const box = new THREE.Box3().setFromObject(object);
@@ -704,7 +728,9 @@ function showModel(gltf) {
   if (skeletonHelper) { scene.remove(skeletonHelper); skeletonHelper = null; }
   mixer?.stopAllAction(); mixer = null; emoteAction = null;
   model = gltf.scene;
+  followBone = null; followLast = null;
   if (gltf.animations?.length) {
+    model.traverse(o => { if (!followBone && o.isBone && /Hips$/i.test(o.name)) followBone = o; });
     mixer = new THREE.AnimationMixer(model);
     emoteAction = mixer.clipAction(gltf.animations[0]);
     emoteAction.play();
@@ -715,6 +741,7 @@ function showModel(gltf) {
   model.traverse(o => {
     if (!o.isMesh) return;
     o.castShadow = true;
+    o.frustumCulled = false; // les emotes déplacent le maillage hors de sa boîte d'origine
     tris += (o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count) / 3;
     [].concat(o.material).forEach(m => { mats.add(m); m.wireframe = view.wire; });
     o.skeleton?.bones.forEach(b => bones.add(b));

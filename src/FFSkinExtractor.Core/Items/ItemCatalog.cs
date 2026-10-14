@@ -19,7 +19,7 @@ public sealed record ItemMatch(GameItem Item, int Score);
 /// l'icône d'un objet reprend le nom interne de la tenue (« Icon_avatar_female_sc_top_nanoscientist »
 /// pour la tenue « Sc_Nanoscientist »), et le début de l'ID donne la pièce (203 = haut, 204 = bas…).
 /// </summary>
-public sealed class ItemCatalog
+public sealed partial class ItemCatalog
 {
     public const string SourceUrl = "https://raw.githubusercontent.com/0xme/ItemID2/main/assets/itemData.json";
     public const string Credit = "ID et noms d'objets : ItemID2 par Crystal Person (github.com/0xme/ItemID2)";
@@ -45,14 +45,36 @@ public sealed class ItemCatalog
         [property: JsonPropertyName("icon")] string? Icon,
         [property: JsonPropertyName("description")] string? Description,
         [property: JsonPropertyName("Rare")] string? Rare,
-        [property: JsonPropertyName("itemType")] string? ItemType);
+        [property: JsonPropertyName("itemType")] string? ItemType,
+        [property: JsonPropertyName("collectionType")] string? CollectionType = null);
+
+    /// <summary>Types d'emote du jeu (collection) : emote, emote d'entrée, super emote, changement de look.</summary>
+    public static readonly string[] EmoteTypes = ["EMOTE", "GROUPANIM", "SUPER_EMOTE", "TRANSFORM_EMOTE"];
+
+    readonly Dictionary<string, List<GameItem>> _emotesByKey = [];
+
+    /// <summary>Emotes listées par ItemID2 (hors « Default - No Animation »).</summary>
+    public IReadOnlyList<GameItem> Emotes { get; private set; } = [];
 
     public static ItemCatalog Parse(Stream json)
     {
         var raw = JsonSerializer.Deserialize(json, CoreJson.Default.ListRawItem) ?? [];
         var catalog = new ItemCatalog();
+        var emotes = new List<GameItem>();
         foreach (var r in raw)
         {
+            if (r.ItemType == "COLLECTION" && EmoteTypes.Contains(r.CollectionType) && long.TryParse(r.ItemId, out long emoteId)
+                && !string.IsNullOrEmpty(r.Icon) && r.Icon != "NONE" && r.Description?.StartsWith("Default -") != true)
+            {
+                var emote = new GameItem(emoteId, r.Description is null or "NONE" ? r.Icon : r.Description, r.Icon, r.Rare ?? "NONE", r.CollectionType!, "Emote", null);
+                catalog._byId[emoteId] = emote;
+                emotes.Add(emote);
+                string key = EmoteKey(EmoteIconPrefix().Replace(r.Icon, ""));
+                if (key.Length == 0) continue;
+                if (!catalog._emotesByKey.TryGetValue(key, out var list)) catalog._emotesByKey[key] = list = [];
+                list.Add(emote);
+                continue;
+            }
             if (r.ItemType is not ("CLOTHES" or "AVATAR" or "BUNDLE") || !long.TryParse(r.ItemId, out long id)) continue;
             if (string.IsNullOrEmpty(r.Icon) || r.Icon == "NONE") continue;
             var tokens = Tokens(r.Icon);
@@ -71,7 +93,34 @@ public sealed class ItemCatalog
             catalog._byId[id] = item;
             catalog._indexed.Add((item, tokens));
         }
+        catalog.Emotes = emotes;
         return catalog;
+    }
+
+    static string EmoteKey(string s) => new(s.ToLowerInvariant().Where(char.IsAsciiLetterOrDigit).ToArray());
+
+    [System.Text.RegularExpressions.GeneratedRegex("^(icon_)?(emote_|groupanim_|superemote_|ff_ui_transform_icon_|ff_ui_emote_)", System.Text.RegularExpressions.RegexOptions.IgnoreCase)]
+    private static partial System.Text.RegularExpressions.Regex EmoteIconPrefix();
+
+    static readonly HashSet<string> EmoteNoise = new(StringComparer.OrdinalIgnoreCase)
+        { "emote", "ani", "anim", "cos", "groupanim", "superemote", "other", "male", "female", "ingame", "animation", "preview", "inter", "transform", "transofrm" };
+
+    /// <summary>
+    /// Emote d'ItemID2 d'un clip d'animation, par le nom : « Male_Emote_DAB » → « Icon_Emote_DAB ».
+    /// Les mots de la fin sont retirés un à un (« …_Basketball_Skull » → « …_Basketball »).
+    /// Renvoie aussi si le nom correspond en entier.
+    /// </summary>
+    public (GameItem Item, bool Exact)? EmoteFor(string clip)
+    {
+        var tokens = clip.Split('_', ' ').Where(t => t.Length > 0 && !EmoteNoise.Contains(t)).ToList();
+        for (int n = tokens.Count; n > 0; n--)
+            if (_emotesByKey.TryGetValue(EmoteKey(string.Concat(tokens.Take(n))), out var items))
+                return (items.OrderBy(i => i.Id).First(), n == tokens.Count);
+        // « SUPEREMOTE_MALE_FROG » → « Icon_Emote_NB_Frog » : nom de l'icône qui finit par celui du clip
+        string whole = EmoteKey(string.Concat(tokens));
+        if (whole.Length >= 4 && _emotesByKey.FirstOrDefault(e => e.Key.EndsWith(whole)).Value is { } ends)
+            return (ends.OrderBy(i => i.Id).First(), false);
+        return null;
     }
 
     public static ItemCatalog Load(string path)

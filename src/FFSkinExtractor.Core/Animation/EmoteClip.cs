@@ -41,18 +41,28 @@ public static class EmoteReader
         {
             try
             {
-                var clip = bundle.BaseField(info);
+                // Le nom suffit à écarter les clips d'effets et d'objets, sans décoder leurs courbes
+                if (!MayAnimateCharacter(bundle.ReadName(info))) continue;
+                var clip = bundle.BaseFieldWithout(info, "m_16BitCurves");
                 string name = clip["m_Name"].AsString;
-                if (GenderOf(name) is not { } g) continue;
                 // Clips des accessoires de l'emote (rose, drone, livre) : ils n'animent pas le personnage
-                var paths = BonePaths(g);
-                int bones = clip["m_ClipBindingConstant"]["genericBindings"]["Array"].Children
-                    .Where(b => b["typeID"].AsInt == 4).Select(b => b["path"].AsUInt).Distinct().Count(paths.ContainsKey);
-                if (bones >= 10) result.Add((name, g, info.PathId));
+                var hashes = clip["m_ClipBindingConstant"]["genericBindings"]["Array"].Children
+                    .Where(b => b["typeID"].AsInt == 4).Select(b => b["path"].AsUInt).Distinct().ToList();
+                string[] genders = GenderOf(name) is { } g ? [g] : ["Male", "Female"];
+                var best = genders.Select(x => (Gender: x, Bones: hashes.Count(BonePaths(x).ContainsKey))).MaxBy(x => x.Bones);
+                if (best.Bones >= 10) result.Add((name, best.Gender, info.PathId));
             }
             catch (Exception) { /* clip d'un format inconnu */ }
         }
         return result;
+    }
+
+    static bool MayAnimateCharacter(string name)
+    {
+        if (name.Length == 0 || name.StartsWith("FF_VFX", StringComparison.OrdinalIgnoreCase) || name.StartsWith("VFX", StringComparison.OrdinalIgnoreCase)
+            || name.StartsWith("Recorded", StringComparison.OrdinalIgnoreCase) || name.StartsWith("Take 0", StringComparison.OrdinalIgnoreCase))
+            return false;
+        return GenderOf(name) != null || name.Contains("Emote", StringComparison.OrdinalIgnoreCase) || name.Contains("Anim", StringComparison.OrdinalIgnoreCase);
     }
 
     static readonly Dictionary<string, Dictionary<uint, string>> PathCache = [];
@@ -76,14 +86,19 @@ public static class EmoteReader
         }
     }
 
-    static string? GenderOf(string clip) =>
-        clip.StartsWith("Female", StringComparison.OrdinalIgnoreCase) ? "Female"
-        : clip.StartsWith("Male", StringComparison.OrdinalIgnoreCase) ? "Male" : null;
+    /// <summary>Genre écrit dans le nom du clip : « Male_DAB », « GroupAnim_Riding_Female », « FemaleSit ».</summary>
+    public static string? GenderOf(string clip)
+    {
+        var tokens = clip.Split('_', ' ');
+        if (tokens.Any(t => t.StartsWith("Female", StringComparison.OrdinalIgnoreCase))) return "Female";
+        if (tokens.Any(t => t.StartsWith("Male", StringComparison.OrdinalIgnoreCase))) return "Male";
+        return null;
+    }
 
     public static EmoteClip Read(GameBundle bundle, long pathId, string gender)
     {
         var info = bundle.GetInfo(pathId) ?? throw new KeyNotFoundException($"clip {pathId} introuvable");
-        var clip = bundle.BaseField(info);
+        var clip = bundle.BaseFieldWithout(info, "m_16BitCurves");
         string name = clip["m_Name"].AsString;
         var muscle = clip["m_MuscleClip"];
         float stop = muscle["m_StopTime"].AsFloat;

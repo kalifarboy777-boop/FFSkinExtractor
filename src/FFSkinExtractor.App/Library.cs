@@ -63,7 +63,7 @@ public sealed record Look(string Gender, bool HighDetail, string? Character, Dic
     bool Base = true, bool Skinned = true, bool Pbr = true, string? Emote = null);
 
 /// <summary>Une emote, avec les genres pour lesquels le jeu a son animation.</summary>
-public sealed record EmoteEntry(string Key, string Name, IReadOnlyList<string> Genders);
+public sealed record EmoteEntry(string Key, string Name, string Category, string? Icon, long? Id, IReadOnlyList<string> Genders, bool Available);
 
 /// <summary>Pièces choisies : pour chaque type de pièce, la tenue d'où elle vient.</summary>
 public sealed record Selection(string Gender, bool HighDetail, Dictionary<string, string> Pieces,
@@ -193,12 +193,12 @@ public sealed partial class Library : IDisposable
                 .ToList();
             // Un même bundle peut être présent plusieurs fois (ancienne copie, version récupérée de l'appareil) :
             // on garde la plus récente
-            var bundles = files.Where(GameBundle.IsOutfitBundle).Where(GameBundle.IsDownloaded)
+            var bundles = files.Where(f => GameBundle.IsOutfitBundle(f) || EmoteReader.IsEmoteBundle(f)).Where(GameBundle.IsDownloaded)
                 .GroupBy(f => Path.GetFileName(f).Split('.')[0], StringComparer.OrdinalIgnoreCase)
                 .Select(g => g.OrderByDescending(File.GetLastWriteTimeUtc).First())
                 .OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToList();
-            BundleCount = bundles.Count;
-            if (bundles.Count == 0) throw new InvalidDataException("Aucun bundle de tenue (optionalab_avatar…) dans ce dossier.");
+            BundleCount = bundles.Count(GameBundle.IsOutfitBundle);
+            if (BundleCount == 0) throw new InvalidDataException("Aucun bundle de tenue (optionalab_avatar…) dans ce dossier.");
 
             // Paquet du jeu (.xapk/.apk) : corps de base, visage, peau
             GamePackage = settings.GamePackage is { Length: > 0 } p && File.Exists(p) ? p : FindPackage(files);
@@ -283,7 +283,7 @@ public sealed partial class Library : IDisposable
             BuildCatalogViews();
             BuildFacePaintViews();
             Message = "Lecture des emotes…";
-            ScanEmotes(files);
+            ScanEmotes(bundles, results);
 
             if (data != null)
             {
@@ -549,7 +549,12 @@ public sealed partial class Library : IDisposable
             foreach (bool hd in new[] { true, false })
                 foreach (var o in OutfitReader.Read(bundle, new OutfitReadOptions { HighDetail = hd }))
                     outfits.Add(new ScanCache.OutfitSummary(o.Gender, o.Name, hd, o.Parts.Select(p => new ScanCache.PartSummary(p.Piece, p.SlotName)).ToList()));
-            return new ScanCache.BundleScan(bundle.CabName, outfits, layers, overlays);
+            // Animations des emotes : dans les bundles d'emote, mais aussi dans ceux des tenues qui en offrent une
+            var emotes = new List<ScanCache.EmoteRef>();
+            if (!GameBundle.IsEncrypted(path))
+                try { emotes.AddRange(EmoteReader.List(bundle).Select(c => new ScanCache.EmoteRef(c.Name, c.Gender, c.PathId))); }
+                catch (Exception) { /* clips illisibles */ }
+            return new ScanCache.BundleScan(bundle.CabName, outfits, layers, overlays, emotes);
         }
         catch (Exception) { return null; /* bundle illisible : on passe au suivant */ }
     }
@@ -700,46 +705,82 @@ public sealed partial class Library : IDisposable
     Dictionary<long, List<(string Key, string Piece)>> _itemIndex = [];
 
     /// <summary>
-    /// Emotes des bundles « optionalab_emote… » : un clip par genre (« Male_DAB », « Female_DAB »).
-    /// Les bundles chiffrés par le jeu ne sont pas lus.
+    /// Emotes trouvées dans les bundles (ceux des emotes, mais aussi ceux des tenues), reliées aux emotes
+    /// d'ItemID2 par le nom du clip (« Male_Emote_DAB » → « Icon_Emote_DAB ») pour le nom, l'icône et le type
+    /// (emote, emote d'entrée, super emote…). Les emotes d'ItemID2 absentes des fichiers sont listées à part.
     /// </summary>
-    void ScanEmotes(List<string> files)
+    void ScanEmotes(List<string> bundles, ScanCache.BundleScan?[] results)
     {
-        var clips = new Dictionary<(string, string), (string, long)>();
-        var names = new Dictionary<string, string>();
-        var bundles = files.Where(EmoteReader.IsEmoteBundle).Where(GameBundle.IsDownloaded)
-            .GroupBy(f => Path.GetFileName(f).Split('.')[0], StringComparer.OrdinalIgnoreCase)
-            .Select(g => g.OrderByDescending(File.GetLastWriteTimeUtc).First()).OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToList();
-        var found = new List<(string Bundle, string Name, string Gender, long PathId)>[bundles.Count];
-        Parallel.For(0, bundles.Count, i =>
-        {
-            try
+        // Pour chaque emote et genre, le clip qui la représente le mieux (nom exact, sans « _Loop », « Preview »…)
+        var best = new Dictionary<(string Key, string Gender), (int Score, string Bundle, long PathId)>();
+        var info = new Dictionary<string, (string Name, string Category, GameItem? Item)>();
+        for (int i = 0; i < bundles.Count; i++)
+            foreach (var clip in results[i]?.Emotes ?? [])
             {
-                using var b = new GameBundle(bundles[i]);
-                found[i] = EmoteReader.List(b).Select(c => (bundles[i], c.Name, c.Gender, c.PathId)).ToList();
+                var match = Catalog?.EmoteFor(clip.Name);
+                string key, name, category;
+                if (match is { } m)
+                    (key, name, category) = (m.Item.Id.ToString(), m.Item.Name, CategoryOf(m.Item.Type));
+                else
+                {
+                    name = EmoteName(clip.Name);
+                    key = Regex.Replace(name.ToLowerInvariant(), "[^a-z0-9]", "");
+                    category = CategoryOf(clip.Name);
+                    if (key.Length == 0) continue;
+                }
+                info.TryAdd(key, (name, category, match?.Item));
+                int score = ClipScore(clip.Name, match?.Exact ?? false);
+                if (!best.TryGetValue((key, clip.Gender), out var cur) || score > cur.Score)
+                    best[(key, clip.Gender)] = (score, bundles[i], clip.PathId);
             }
-            catch (Exception) { found[i] = []; }
-        });
-        foreach (var (bundle, clip, gender, pathId) in found.SelectMany(f => f))
-        {
-            // « Male_Cut Throat », « Female_CutThroat » → même emote
-            string display = EmoteName(clip);
-            string key = Regex.Replace(display.ToLowerInvariant(), "[^a-z0-9]", "");
-            if (key.Length == 0) continue;
-            names.TryAdd(key, display);
-            clips.TryAdd((key, gender), (bundle, pathId));
-        }
-        _emoteClips = clips;
+        _emoteClips = best.ToDictionary(b => b.Key, b => (b.Value.Bundle, b.Value.PathId));
         lock (_emoteCache) _emoteCache.Clear();
-        Emotes = names.Select(n => new EmoteEntry(n.Key, n.Value,
-                new[] { "Male", "Female" }.Where(g => clips.ContainsKey((n.Key, g))).ToList()))
-            .OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList();
+        var list = info.Select(n => new EmoteEntry(n.Key, n.Value.Name, n.Value.Category, n.Value.Item?.IconUrl, n.Value.Item?.Id,
+                new[] { "Male", "Female" }.Where(g => best.ContainsKey((n.Key, g))).ToList(), true)).ToList();
+        foreach (var item in Catalog?.Emotes ?? [])
+            if (!info.ContainsKey(item.Id.ToString()))
+                list.Add(new EmoteEntry(item.Id.ToString(), item.Name, CategoryOf(item.Type), item.IconUrl, item.Id, [], false));
+        Emotes = list.OrderBy(e => Array.IndexOf(EmoteCategories, e.Category)).ThenBy(e => !e.Available)
+            .ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>Catégories de la liste des emotes, dans l'ordre d'affichage.</summary>
+    public static readonly string[] EmoteCategories = ["Emotes", "Emotes d'entrée", "Super emotes", "Look changer", "Poses de tenue", "Autres"];
+
+    static string CategoryOf(string typeOrClip) => typeOrClip switch
+    {
+        "EMOTE" => "Emotes",
+        "GROUPANIM" => "Emotes d'entrée",
+        "SUPER_EMOTE" => "Super emotes",
+        "TRANSFORM_EMOTE" => "Look changer",
+        _ when Regex.IsMatch(typeOrClip, "groupanim", RegexOptions.IgnoreCase) => "Emotes d'entrée",
+        _ when Regex.IsMatch(typeOrClip, "superemote", RegexOptions.IgnoreCase) => "Super emotes",
+        _ when Regex.IsMatch(typeOrClip, "transf?o", RegexOptions.IgnoreCase) => "Look changer",
+        _ when Regex.IsMatch(typeOrClip, "(^|_)(Cos|Sc)_.*(Idle|Special)", RegexOptions.IgnoreCase) => "Poses de tenue",
+        _ when Regex.IsMatch(typeOrClip, "(^|_)Emote_", RegexOptions.IgnoreCase) => "Emotes",
+        _ => "Autres",
+    };
+
+    // Le clip principal d'une emote : celui qui porte son nom en entier, sans variante de boucle ou d'aperçu
+    static int ClipScore(string clip, bool exact)
+    {
+        int score = exact ? 100 : 0;
+        // L'aperçu de boutique montre l'emote entière (super emote, emote à deux) ; la version en partie est découpée
+        if (Regex.IsMatch(clip, "ingame|_inter_|lobby", RegexOptions.IgnoreCase)) score -= 40;
+        if (Regex.IsMatch(clip, "preview", RegexOptions.IgnoreCase)) score -= 20;
+        if (Regex.IsMatch(clip, "(_|^)(loop|start|end|idle|in|out)(\\d*)$", RegexOptions.IgnoreCase)) score -= 20;
+        return score - clip.Length / 4;
     }
 
     static string EmoteName(string clip)
     {
-        string name = Regex.Replace(clip, "^(Female|Male)_?", "", RegexOptions.IgnoreCase);
-        name = Regex.Replace(name, "^Emote_", "", RegexOptions.IgnoreCase).Replace('_', ' ').Trim();
+        string name = Regex.Replace(clip, "(^|_)(Female|Male)(?=_|$)", "", RegexOptions.IgnoreCase).Trim('_');
+        name = Regex.Replace(name, "^(Emote|GroupAnim|Preview_Animation|Ingame_Animation)_", "", RegexOptions.IgnoreCase);
+        // Poses du lobby d'une tenue : « Cos_Medusa_Idle01 » → « Medusa (pose 1) »
+        if (Regex.Match(name, "^(Cos|Sc)_(.+?)_(Idle|Special)_?(\\d*)$", RegexOptions.IgnoreCase) is { Success: true } pose)
+            name = $"{pose.Groups[2].Value} ({(pose.Groups[3].Value.Equals("Idle", StringComparison.OrdinalIgnoreCase) ? "pose" : "pose spéciale")}"
+                + (pose.Groups[4].Value is { Length: > 0 } n && n.TrimStart('0') is { Length: > 0 } k && k != "1" ? " " + k : "") + ")";
+        name = name.Replace('_', ' ').Trim();
         // « LetsGroove » → « Lets Groove »
         return Regex.Replace(name, "(?<=[a-z])(?=[A-Z])", " ");
     }
@@ -999,7 +1040,7 @@ public sealed partial class Library : IDisposable
         }
         var sel = new Selection(look.Gender, look.HighDetail, pieces, look.Base, look.Skinned, look.Pbr)
             { Name = $"{look.Gender}_{name ?? "Base"}{(look.HighDetail ? "_HD" : "")}", Character = character, FacePaint = facePaint,
-              Emote = look.Emote is { Length: > 0 } e && Emotes.Any(x => x.Key == e) ? e : null };
+              Emote = look.Emote is { Length: > 0 } e && Emotes.Any(x => x.Key == e && x.Available) ? e : null };
         return (sel, unknown);
     }
 

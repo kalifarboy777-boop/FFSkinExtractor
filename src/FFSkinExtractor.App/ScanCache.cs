@@ -10,14 +10,15 @@ namespace FFSkinExtractor.App;
 sealed class ScanCache
 {
     // À augmenter quand la lecture des tenues change, pour relire tous les bundles
-    const int Version = 2;
+    const int Version = 3;
 
     public sealed record PartSummary(string Piece, string SlotName);
     public sealed record OutfitSummary(string Gender, string Name, bool HighDetail, List<PartSummary> Parts);
     public sealed record Layer(string Gender, HeadLayerKind Kind, string Name, string Overlay, bool Atlas);
-    public sealed record BundleScan(string? Cab, List<OutfitSummary> Outfits, List<Layer> Layers, List<(string Key, string Overlay)> Overlays);
+    public sealed record EmoteRef(string Name, string Gender, long PathId);
+    public sealed record BundleScan(string? Cab, List<OutfitSummary> Outfits, List<Layer> Layers, List<(string Key, string Overlay)> Overlays, List<EmoteRef> Emotes);
 
-    sealed record Entry(long Size, long Modified, string? Cab, List<OutfitSummary> Outfits, List<Layer> Layers, List<string[]> Overlays);
+    sealed record Entry(long Size, long Modified, string? Cab, List<OutfitSummary> Outfits, List<Layer> Layers, List<string[]> Overlays, List<EmoteRef>? Emotes);
     sealed record FileData(int Version, Dictionary<string, Entry> Bundles);
 
     static readonly JsonSerializerOptions Json = new() { IncludeFields = true };
@@ -43,7 +44,7 @@ sealed class ScanCache
         if (!_entries.TryGetValue(path, out var e)) return null;
         var info = new FileInfo(path);
         if (info.Length != e.Size || info.LastWriteTimeUtc.Ticks != e.Modified) return null;
-        return new BundleScan(e.Cab, e.Outfits, e.Layers, e.Overlays.Select(o => (o[0], o[1])).ToList());
+        return new BundleScan(e.Cab, e.Outfits, e.Layers, e.Overlays.Select(o => (o[0], o[1])).ToList(), e.Emotes ?? []);
     }
 
     public void Save(IReadOnlyList<string> paths, IReadOnlyList<BundleScan?> scans)
@@ -54,7 +55,7 @@ sealed class ScanCache
             if (scans[i] is not { } s) continue;
             var info = new FileInfo(paths[i]);
             bundles[paths[i]] = new Entry(info.Length, info.LastWriteTimeUtc.Ticks, s.Cab, s.Outfits, s.Layers,
-                s.Overlays.Select(o => new[] { o.Key, o.Overlay }).ToList());
+                s.Overlays.Select(o => new[] { o.Key, o.Overlay }).ToList(), s.Emotes);
         }
         try
         {

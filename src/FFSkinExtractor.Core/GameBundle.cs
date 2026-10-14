@@ -53,6 +53,28 @@ public sealed partial class GameBundle : IDisposable
         return a == 0x1f && b == 0x8b;
     }
 
+    /// <summary>
+    /// Bundle chiffré par le jeu (UnityCN, drapeau 0x200 de l'en-tête UnityFS en Unity 2018) : il n'est pas lu,
+    /// ses objets seraient illisibles.
+    /// </summary>
+    public static bool IsEncrypted(string path)
+    {
+        try
+        {
+            using var r = new BinaryReader(File.OpenRead(path));
+            if (Encoding.ASCII.GetString(r.ReadBytes(8)) != "UnityFS\0") return false;
+            r.ReadBytes(4);
+            ReadCString(r); ReadCString(r);
+            r.ReadBytes(8 + 4 + 4);
+            var f = r.ReadBytes(4);
+            uint flags = (uint)(f[0] << 24 | f[1] << 16 | f[2] << 8 | f[3]);
+            return (flags & 0x200) != 0;
+        }
+        catch (Exception) { return false; }
+    }
+
+    static void ReadCString(BinaryReader r) { while (r.ReadByte() != 0) { } }
+
     /// <summary>Un fichier sans contenu (0 octet) veut dire que le jeu ne l'a pas encore téléchargé.</summary>
     public static bool IsDownloaded(string path) => new FileInfo(path).Length > 0;
 
@@ -139,6 +161,26 @@ public sealed partial class GameBundle : IDisposable
     public AssetFileInfo? GetInfo(long pathId) => _file.file.GetAssetInfo(pathId);
 
     public AssetTypeValueField BaseField(AssetFileInfo info) => _am.GetBaseField(_file, info);
+
+    /// <summary>Nom d'un objet (premier champ, « m_Name »), lu sans décoder le reste.</summary>
+    public string ReadName(AssetFileInfo info)
+    {
+        lock (_file.file.Reader)
+        {
+            var r = _file.file.Reader;
+            r.Position = info.GetAbsoluteByteOffset(_file.file);
+            int length = r.ReadInt32();
+            return length is > 0 and < 512 ? Encoding.UTF8.GetString(r.ReadBytes(length)) : "";
+        }
+    }
+
+    /// <summary>Lit un objet en s'arrêtant avant les champs ajoutés par le jeu (« m_16BitCurves » des clips).</summary>
+    public AssetTypeValueField BaseFieldWithout(AssetFileInfo info, params string[] fields)
+    {
+        var template = _am.GetTemplateBaseField(_file, info);
+        template.Children.RemoveAll(c => fields.Contains(c.Name));
+        return template.MakeValue(_file.file.Reader, info.GetAbsoluteByteOffset(_file.file));
+    }
 
     /// <summary>Lit des données stockées à part dans le bundle (fichier .resS).</summary>
     public byte[] ReadStreamData(string path, long offset, int size)

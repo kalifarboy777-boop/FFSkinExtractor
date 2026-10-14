@@ -17,8 +17,9 @@ un format compressé propre au jeu, qu'AssetStudio ne sait pas lire. Ce projet d
 - **Maquillage et racines de cheveux** : peints sur la texture du visage, comme dans le jeu (ID 214…).
 - **Squelette et poids** : armature complète (52 os femme, 55 homme) et os de tissu ou de cheveux propres à
   chaque vêtement. Le modèle se pose et s'anime directement dans Blender.
-- **Emotes** : les emotes présentes dans tes fichiers (DAB, Dance Shuffle, Penguin…) se jouent sur la tenue dans
-  l'aperçu et sont incluses dans le GLB exporté, sous forme d'animation du squelette.
+- **Emotes** : toutes les emotes présentes dans tes fichiers (y compris celles rangées avec les tenues), avec leur nom
+  et leur icône ItemID2, triées par onglet : emotes, emotes d'entrée, super emotes, look changer, poses de tenue.
+  Elles se jouent sur la tenue dans l'aperçu et sont incluses dans le GLB exporté (animation du squelette).
 - **Corps de base** : peau, visage, cheveux et tenue de départ du jeu, remplacés par les pièces choisies.
 - **Matériaux PBR** : couleur, normales, rugosité, métal et occlusion depuis les textures `_N`, `_S` et `_PBR`,
   transparence (lunettes, voiles) et découpe (cheveux).
@@ -69,8 +70,9 @@ indique le dossier des données dans **Réglages** : l'analyse prend quelques se
 - En haut, **Catalogue complet** : les ~12 700 objets d'ItemID2, filtrables par type (bundles, personnages, têtes,
   maquillages, hauts, bas, chaussures) et par nom, ID ou rareté. Un clic sur un objet « 3D » l'essaie ;
   un objet « Absent » n'a pas encore été téléchargé par le jeu.
-- À gauche toujours, **Emote** : choisis une emote pour la voir sur la tenue ; le bouton lecture/pause apparaît
-  dans les outils de l'aperçu, et l'animation part avec le `.glb`.
+- À gauche toujours, **Emote** : choisis une emote (onglets par type, icônes ; l'onglet « Absentes » liste celles
+  que le jeu n'a pas encore téléchargées). Le bouton lecture/pause apparaît dans les outils de l'aperçu, la caméra
+  suit le personnage, et l'animation part avec le `.glb`.
 - Au centre : fais tourner avec la souris, molette pour zoomer ; boutons pour recadrer, rotation automatique,
   fil de fer, squelette, fond clair et capture PNG.
 - À droite : pièces portées, options (corps de base, squelette, PBR, textures PNG), téléchargement du `.glb`,
@@ -124,7 +126,7 @@ dotnet publish src/FFSkinExtractor.Cli -c Release -r win-x64 --self-contained -p
   coffre-fort, ou télécharge toutes les ressources dans les paramètres du jeu, puis recopie le dossier et relance l'analyse.
 - Hors des hauts (table « Clothes » du jeu), les ID sont trouvés par le nom : un objet dont l'icône a un mot de plus
   que toutes les tenues (souvent un coloris absent des fichiers) reste sans modèle plutôt que d'en prendre un faux.
-- Les emotes les plus récentes sont stockées chiffrées par le jeu : elles ne sont pas lues (environ 10 fichiers sur 43).
+- Une partie des bundles récents est stockée chiffrée par le jeu : leurs emotes ne sont pas lues.
   Les effets animés (VFX) et les accessoires d'emote ne sont pas exportés.
 - La correspondance rugosité/métal des shaders du jeu est approchée.
 

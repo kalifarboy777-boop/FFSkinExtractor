@@ -197,7 +197,7 @@ dialog h2 { margin-top: 0; }
 .popover input[type=search] {
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; outline: none;
 }
-.popover .tabs { display: flex; gap: 6px; }
+.popover .tabs { display: flex; flex-wrap: wrap; gap: 6px; }
 .popover .tabs button { padding: 3px 10px; border-radius: 99px; font-size: 12px; color: var(--muted); background: transparent; }
 .popover .tabs button.active { background: var(--accent); color: #141414; border-color: var(--accent); }
 .popover .options { overflow: auto; display: flex; flex-direction: column; gap: 4px; }
