@@ -62,7 +62,7 @@ indique le dossier des données dans **Réglages** : l'analyse prend quelques se
 
 - À gauche, **Personnage** : le personnage de base ou un personnage du jeu, choisi tel quel (visage, coiffure,
   tenue d'origine). **Bundle** : un bundle de la boutique (liste ItemID2, type BUNDLE) remplit tous ses emplacements ;
-  les bundles absents de tes fichiers sont listés à part. **Skin builder** : un ID d'objet par emplacement
+  les bundles absents de tes fichiers sont listés à part. **Skin builder** : les six catégories du jeu (cheveux et coiffes ensemble, masque, maquillage, haut, bas, chaussures), un ID d'objet par catégorie
   (ex. `203000528`, ou `214047002` pour un maquillage), ou une recherche par nom ; chaque ID remplace la pièce du personnage.
 - En haut, **Catalogue complet** : les ~12 700 objets d'ItemID2, filtrables par type (bundles, personnages, têtes,
   maquillages, hauts, bas, chaussures) et par nom, ID ou rareté. Un clic sur un objet « 3D » l'essaie ;

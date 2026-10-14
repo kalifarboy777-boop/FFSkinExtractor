@@ -6,17 +6,16 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 // ---------------------------------------------------------------------------
 // Données et état
 // ---------------------------------------------------------------------------
-// Emplacements du constructeur, dans l'ordre du jeu
+// Emplacements du constructeur : les six catégories du jeu. Les coiffes (« Head ») vont avec les cheveux,
+// comme dans le jeu où une tête remplace l'autre ; les pièces « Mains » et « Autre » d'un bundle restent portées
+// sans avoir de ligne à elles.
 const SLOTS = [
-  { key: 'Hair', label: 'Cheveux', hint: 'Tête, coiffure' },
-  { key: 'Mask', label: 'Masque', hint: 'Lunettes, masque' },
-  { key: 'Facepaint', label: 'Maquillage', hint: 'Peinture du visage' },
-  { key: 'Head', label: 'Chapeau', hint: 'Coiffe' },
-  { key: 'Top', label: 'Haut', hint: 'Veste, t-shirt' },
-  { key: 'Bottom', label: 'Bas', hint: 'Pantalon, jupe' },
-  { key: 'Shoe', label: 'Chaussures', hint: 'Chaussures' },
-  { key: 'Hands', label: 'Mains', hint: 'Gants' },
-  { key: 'Other', label: 'Autre', hint: 'Divers' },
+  { key: 'Hair', keys: ['Hair', 'Head'], label: 'Cheveux', hint: 'Tête, coiffure, chapeau' },
+  { key: 'Mask', keys: ['Mask'], label: 'Masque', hint: 'Lunettes, masque' },
+  { key: 'Facepaint', keys: ['Facepaint'], label: 'Maquillage', hint: 'Peinture du visage' },
+  { key: 'Top', keys: ['Top'], label: 'Haut', hint: 'Veste, t-shirt' },
+  { key: 'Bottom', keys: ['Bottom'], label: 'Bas', hint: 'Pantalon, jupe' },
+  { key: 'Shoe', keys: ['Shoe'], label: 'Chaussures', hint: 'Chaussures' },
 ];
 
 const state = {
@@ -298,7 +297,7 @@ async function loadCatalog() {
 
 const characters = () => state.catalog.characters.filter(c => c.gender === state.gender);
 const currentCharacter = () => state.catalog.characters.find(c => c.key === state.character) ?? null;
-const itemsFor = slot => state.catalog.items.filter(i => i.slot === slot && i.gender === state.gender);
+const itemsFor = keys => state.catalog.items.filter(i => keys.includes(i.slot) && i.gender === state.gender);
 const itemByValue = value => state.catalog.items.find(i => i.value === value && i.gender === state.gender);
 const bundleByValue = value => state.catalog.bundles.find(b => b.value === value);
 
@@ -475,17 +474,15 @@ function applyBundle(value) {
   requestModel();
 }
 
-const slotLabel = key => SLOTS.find(s => s.key === key)?.label ?? key;
+const slotLabel = key => SLOTS.find(s => s.keys.includes(key))?.label ?? key;
 
 // ---- Emplacements (ID d'objet) ----
 function renderSlotFields() {
   const box = $('slotFields');
   box.innerHTML = '';
-  const used = new Set(state.catalog.items.filter(i => i.gender === state.gender).map(i => i.slot));
   for (const s of SLOTS) {
-    if (!s.disabled && !used.has(s.key) && !state.slots[s.key] && !['Hair', 'Mask', 'Facepaint', 'Top', 'Bottom', 'Shoe'].includes(s.key)) continue;
     const row = el('div', 'field-row' + (s.disabled ? ' disabled' : ''));
-    const value = state.slots[s.key] ?? '';
+    const value = s.keys.map(k => state.slots[k]).find(v => v) ?? '';
     const item = value ? itemByValue(value) : null;
     row.append(thumb(item?.iconUrl, s.label.slice(0, 2)));
     const lbl = el('div', 'lbl');
@@ -499,44 +496,51 @@ function renderSlotFields() {
     row.append(input);
     const st = el('div', 'state');
     row.append(st);
-    describeSlot(s.key, value, st);
+    describeSlot(s, value, st);
 
     const suggest = () => {
-      const opts = itemsFor(s.key).map(i => ({
+      const opts = itemsFor(s.keys).map(i => ({
         value: i.value, title: i.name, icon: i.iconUrl, rarity: i.rarity,
         sub: (i.id ? 'ID ' + i.id + ' · ' : '') + i.outfit,
       }));
       showPopover(row, {
-        options: opts, selected: state.slots[s.key], query: input.value,
-        onPick: o => setSlot(s.key, o.value),
+        options: opts, selected: value, query: input.value,
+        onPick: o => setSlot(s, o.value),
       });
     };
     input.onfocus = suggest;
     input.oninput = () => { if (openPicker && row.contains(openPicker)) { closePickers(); } suggest(); };
-    input.onkeydown = e => { if (e.key === 'Enter') { setSlot(s.key, input.value.trim()); closePickers(); input.blur(); } };
+    input.onkeydown = e => { if (e.key === 'Enter') { setSlot(s, input.value.trim()); closePickers(); input.blur(); } };
     input.onchange = () => {
       const v = input.value.trim();
-      if (/^\d+$/.test(v) || v === '') setSlot(s.key, v);
+      if (/^\d+$/.test(v) || v === '') setSlot(s, v);
     };
     box.append(row);
   }
 }
 
-function setSlot(slot, value) {
-  if (value) state.slots[slot] = value; else delete state.slots[slot];
+// Une ligne = une catégorie du jeu : le nouvel objet remplace tout ce qu'elle contenait (cheveux et coiffe)
+function setSlot(s, value) {
+  for (const k of s.keys) delete state.slots[k];
+  if (value) {
+    const slot = itemByValue(value)?.slot;
+    state.slots[slot && s.keys.includes(slot) ? slot : s.key] = value;
+  }
   state.bundle = null;
   render();
   requestModel();
 }
 
 // État d'un emplacement : objet trouvé, objet connu mais absent des fichiers, ou ID inconnu
-async function describeSlot(slot, value, st) {
+async function describeSlot(s, value, st) {
   if (!value) { st.textContent = currentCharacter() ? 'Pièce d\'origine du personnage' : 'Pièce de base'; st.className = 'state'; return; }
   const item = itemByValue(value);
   if (item) {
-    st.textContent = `✓ ${item.name} · ${item.outfit}`;
+    // Un bundle peut remplir à la fois les cheveux et la coiffe : les deux sont portés
+    const others = s.keys.map(k => state.slots[k]).filter(v => v && v !== value).map(v => itemByValue(v)?.name).filter(Boolean);
+    st.textContent = `✓ ${[item.name, ...others].join(' + ')} · ${item.outfit}`;
     st.className = 'state ok';
-    if (item.slot !== slot) st.textContent += ` (va dans « ${slotLabel(item.slot)} »)`;
+    if (!s.keys.includes(item.slot)) st.textContent += ` (va dans « ${slotLabel(item.slot)} »)`;
     return;
   }
   if (!/^\d+$/.test(value)) { st.textContent = 'Saisis un ID d\'objet (chiffres).'; st.className = 'state bad'; return; }
@@ -861,7 +865,7 @@ function pickFromBrowser(it) {
   $('browser').close();
   if (it.action === 'bundle') applyBundle(it.value);
   else if (it.action === 'character') { state.character = it.value; render(); requestModel(); }
-  else setSlot(it.slot, it.value);
+  else setSlot(SLOTS.find(s => s.keys.includes(it.slot)) ?? { key: it.slot, keys: [it.slot] }, it.value);
   toast(`${it.name} appliqué.`);
 }
 
