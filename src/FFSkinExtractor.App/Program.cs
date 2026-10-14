@@ -7,7 +7,7 @@ using FFSkinExtractor.App;
 using FFSkinExtractor.Core.Items;
 
 // FF Skin Studio : interface locale (navigateur) pour parcourir les tenues, les prévisualiser en 3D
-// et les exporter en GLB. Utilisation : FFSkinStudio [dossier des données] [--port N] [--no-browser]
+// et les exporter en GLB. Utilisation : FFSkinStudio [dossier des données] [--port N] [--no-browser] [--background]
 var settings = AppSettings.Load();
 string? folderArg = args.FirstOrDefault(a => !a.StartsWith("--") && Directory.Exists(a));
 if (folderArg != null)
@@ -18,6 +18,26 @@ if (folderArg != null)
 else if (settings.DataFolder == null && AppSettings.Suggestions().FirstOrDefault() is { } guess)
     settings = settings with { DataFolder = guess };
 int port = int.TryParse(Opt("--port"), out var p) ? p : 5178;
+bool background = args.Contains("--background");
+var myVersion = Version.Parse(Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0");
+
+// Déjà lancé (au démarrage de Windows, ou un double-clic de trop) : on ouvre l'adresse, sauf si cette version
+// est plus récente, auquel cas l'ancienne s'arrête et celle-ci prend sa place
+if (await RunningVersion(port) is { } running)
+{
+    if (running >= myVersion)
+    {
+        if (!background) OpenShell($"http://127.0.0.1:{port}/");
+        return;
+    }
+    // Une version d'avant le démarrage avec Windows ne sait pas s'arrêter : on se contente d'ouvrir l'adresse
+    if (!await StopRunning(port))
+    {
+        if (!background) OpenShell($"http://127.0.0.1:{port}/");
+        return;
+    }
+}
+Install.RefreshInstalledCopy();
 
 var builder = WebApplication.CreateSlimBuilder();
 builder.Logging.SetMinimumLevel(LogLevel.Warning);
@@ -221,6 +241,17 @@ app.MapPost("/api/watch", async (PullRequest req, CancellationToken ct) =>
 
 app.MapPost("/api/pull/cancel", () => { pull.Cancel(); return Results.Ok(); });
 
+app.MapGet("/api/autostart", () => new { supported = Install.Supported, enabled = Install.AutoStart });
+app.MapPost("/api/autostart", (AutoStartRequest req) =>
+    Install.SetAutoStart(req.Enabled, port) is { } error ? Results.Problem(error) : Results.Ok(new { enabled = Install.AutoStart }));
+
+app.MapPost("/api/quit", (IHostApplicationLifetime life) =>
+{
+    // Laisse partir la réponse avant de s'arrêter
+    _ = Task.Delay(300).ContinueWith(_ => life.StopApplication());
+    return Results.Ok();
+});
+
 app.MapPost("/api/open-folder", () =>
 {
     string dir = library.Settings.ExportFolder;
@@ -233,8 +264,7 @@ app.Lifetime.ApplicationStarted.Register(() =>
 {
     string url = $"http://127.0.0.1:{port}/";
     Console.WriteLine($"FF Skin Studio est lancé : {url}");
-    Console.WriteLine("Laisse cette fenêtre ouverte pendant que tu utilises l'outil (Ctrl+C pour quitter).");
-    if (!args.Contains("--no-browser")) OpenShell(url);
+    if (!args.Contains("--no-browser") && !background) OpenShell(url);
 });
 
 app.Run();
@@ -278,6 +308,36 @@ static void OpenShell(string target)
     catch (Exception) { /* pas de navigateur ou d'explorateur : l'adresse est affichée dans la console */ }
 }
 
+// Version d'un FF Skin Studio qui répond déjà sur ce port, ou null
+static async Task<Version?> RunningVersion(int port)
+{
+    try
+    {
+        using var http = new HttpClient(new HttpClientHandler { UseProxy = false }) { Timeout = TimeSpan.FromSeconds(2) };
+        using var doc = JsonDocument.Parse(await http.GetStringAsync($"http://127.0.0.1:{port}/api/status"));
+        return doc.RootElement.TryGetProperty("version", out var v) && Version.TryParse(v.GetString(), out var version)
+            ? version : new Version(0, 0);
+    }
+    catch (Exception) { return null; }
+}
+
+static async Task<bool> StopRunning(int port)
+{
+    try
+    {
+        using var http = new HttpClient(new HttpClientHandler { UseProxy = false }) { Timeout = TimeSpan.FromSeconds(2) };
+        await http.PostAsync($"http://127.0.0.1:{port}/api/quit", null);
+    }
+    catch (Exception) { /* ancienne version sans /api/quit : le port restera pris */ }
+    for (int i = 0; i < 25; i++)
+    {
+        if (await RunningVersion(port) == null) return true;
+        await Task.Delay(200);
+    }
+    return false;
+}
+
+record AutoStartRequest(bool Enabled);
 record PullRequest(string Serial);
 record ExportRequest(Look Look, string? FileName, bool Textures = false);
 record BatchRequest(string Gender, bool HighDetail = true, string? Character = null, bool Base = true);

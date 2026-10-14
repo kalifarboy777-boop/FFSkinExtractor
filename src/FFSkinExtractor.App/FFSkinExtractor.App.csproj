@@ -5,9 +5,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>FFSkinStudio</AssemblyName>
+    <!-- Pas de fenêtre de console : le logiciel s'utilise dans le navigateur et peut tourner en arrière-plan -->
+    <OutputType>WinExe</OutputType>
     <RootNamespace>FFSkinExtractor.App</RootNamespace>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <Version>1.7.4</Version>
+    <Version>1.8.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

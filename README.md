@@ -72,7 +72,15 @@ indique le dossier des données dans **Réglages** : l'analyse prend quelques se
 - À droite : pièces portées, options (corps de base, squelette, PBR, textures PNG), téléchargement du `.glb`,
   export dans le dossier `Documents\FFSkinStudio`, et export de tous les bundles portés par le personnage choisi.
 
-Options : `FFSkinStudio.exe [dossier des données] [--port 5178] [--no-browser]`. Les réglages sont gardés dans
+### Comme un site, sans relancer l'exe
+
+Dans **Réglages**, coche **Démarrer avec Windows**. Le logiciel se copie dans `%LOCALAPPDATA%\FFSkinStudio`,
+se lance en arrière-plan à chaque ouverture de session (sans fenêtre) et ajoute sur le bureau un raccourci
+« FF Skin Studio » vers `http://127.0.0.1:5178`. Ensuite, ouvre simplement cette adresse (ou un favori) dans le
+navigateur. Lancer une version plus récente de l'exe remplace celle qui tourne et met à jour la copie installée.
+**Quitter le logiciel**, dans les Réglages, l'arrête jusqu'au prochain lancement.
+
+Options : `FFSkinStudio.exe [dossier des données] [--port 5178] [--no-browser] [--background]`. Les réglages sont gardés dans
 `%APPDATA%\FFSkinStudio`, avec une copie locale de la base ItemID2 (rafraîchie chaque semaine).
 
 ## Ligne de commande (`ffextract`)

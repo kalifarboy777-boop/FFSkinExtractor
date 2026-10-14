@@ -165,7 +165,14 @@
         <input id="setAdb" type="text" spellcheck="false" placeholder="Trouvé automatiquement (Android SDK, LDPlayer, BlueStacks, MuMu, Nox)">
         <small class="muted">adb.exe, utilisé par « Récupérer du téléphone ».</small>
       </label>
+      <div class="startup" id="startupBox">
+        <label class="check"><input type="checkbox" id="setAutoStart"> Démarrer avec Windows</label>
+        <small class="muted">Le logiciel reste ouvert en arrière-plan : ouvre simplement
+          <a href="/" target="_blank">127.0.0.1:5178</a> dans le navigateur (ou le raccourci « FF Skin Studio » du bureau),
+          comme un site. Pas besoin de relancer l'exe.</small>
+      </div>
       <div class="dialog-actions">
+        <button type="button" class="ghost danger-text" id="quitApp" title="Arrête le logiciel jusqu'au prochain lancement">Quitter le logiciel</button>
         <button type="button" class="ghost" id="settingsCancel">Fermer</button>
         <button type="submit" class="primary" id="settingsSave">Enregistrer et analyser</button>
       </div>

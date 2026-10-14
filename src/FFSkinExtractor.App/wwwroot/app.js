@@ -126,7 +126,32 @@ function openSettings() {
     sug.append(b);
   }
   $('settings').showModal();
+  loadAutoStart();
 }
+
+async function loadAutoStart() {
+  try {
+    const a = await (await api('autostart')).json();
+    $('startupBox').hidden = !a.supported;
+    $('setAutoStart').checked = a.enabled;
+  } catch { $('startupBox').hidden = true; }
+}
+
+$('setAutoStart').onchange = async e => {
+  const enabled = e.target.checked;
+  try {
+    await api('autostart', { enabled });
+    toast(enabled ? 'FF Skin Studio démarrera avec Windows. Raccourci « FF Skin Studio » ajouté sur le bureau.'
+      : 'FF Skin Studio ne démarrera plus avec Windows.');
+  } catch (err) { e.target.checked = !enabled; toast(err.message, true); }
+};
+
+$('quitApp').onclick = async () => {
+  if (!confirm('Arrêter FF Skin Studio ? La page ne répondra plus jusqu\'au prochain lancement.')) return;
+  try { await api('quit', {}); } catch { }
+  $('settings').close();
+  toast('FF Skin Studio est arrêté.');
+};
 
 $('openSettings').onclick = openSettings;
 $('settingsCancel').onclick = () => $('settings').close();
