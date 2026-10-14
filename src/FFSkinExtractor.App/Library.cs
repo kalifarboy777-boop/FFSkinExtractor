@@ -794,7 +794,9 @@ public sealed partial class Library : IDisposable
         var layers = new List<HeadLayer>();
         string? hairFrom = sel.Pieces.TryGetValue("Hair", out var hairId) ? Get(hairId)?.Name : sel.Character;
         if (hairFrom != null) layers.AddRange(HeadLayers(HeadLayerKind.HairRoot, sel.Gender, hairFrom, data));
-        else if (sel.Base && data != null && BaseHairRoot(data, sel.Gender) is { } baseRoot)
+        // Coiffure choisie sans racines à elle (casquette, chapeau) : le jeu garde dessous les cheveux ras du personnage
+        // de base. Pas pour un personnage sans coiffure choisie : il peut être chauve.
+        if (layers.Count == 0 && (hairId != null || sel.Character == null) && sel.Base && data != null && BaseHairRoot(data, sel.Gender) is { } baseRoot)
             layers.AddRange(HeadLayers(HeadLayerKind.HairRoot, sel.Gender, baseRoot, data));
         string? paint = sel.FacePaint ?? sel.Character;
         if (paint != null) layers.AddRange(HeadLayers(HeadLayerKind.FacePaint, sel.Gender, paint, data));
