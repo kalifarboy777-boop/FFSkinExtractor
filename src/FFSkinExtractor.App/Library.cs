@@ -32,6 +32,8 @@ public sealed record OutfitEntry(string Id, string Gender, string Name, string D
     internal string SourceOf(string piece) => PieceSources.GetValueOrDefault(piece) ?? Id;
     /// <summary>Tenue tirée d'une recette du jeu : slots d'autres tenues habillés d'autres overlays.</summary>
     internal List<RecipePart>? Recipe { get; init; }
+    // Aucune pièce lue dans un bundle : la tenue ne sert qu'à porter des ID d'objets
+    internal bool RecipeOnly { get; init; }
 }
 
 /// <summary>Morceau d'une recette : un slot (et son bundle) et l'overlay qui l'habille, s'il est connu.</summary>
@@ -295,7 +297,7 @@ public sealed partial class Library : IDisposable
     List<Arrival> FindArrivals(IReadOnlySet<string> paths)
     {
         var result = new List<Arrival>();
-        var keys = Outfits.Where(o => paths.Contains(o.BundlePath) && !RecipeOnly(o)).Select(o => (o.Key, o.Gender, o.Name, o.DisplayName)).Distinct();
+        var keys = Outfits.Where(o => paths.Contains(o.BundlePath) && !o.RecipeOnly).Select(o => (o.Key, o.Gender, o.Name, o.DisplayName)).Distinct();
         foreach (var (key, gender, name, display) in keys)
         {
             if (Bundles.FirstOrDefault(b => b.Value == "b:" + key) is { } b)
@@ -352,7 +354,20 @@ public sealed partial class Library : IDisposable
                         pieces.Add(p);
                         items[p.Piece] = e.PieceItems.GetValueOrDefault(p.Piece) ?? [];
                     }
-            if (ordered.Count == 1) return first with { PieceSources = sources };
+            // La recette du jeu dit quel overlay habille chaque slot (« Male_Hair_Cos_Hurricane_IN_N » reçoit
+            // l'overlay de la casquette, pas celui des cheveux) : elle passe avant l'appariement par les noms
+            for (int i = 0; i < pieces.Count; i++)
+            {
+                var chosen = pieces[i];
+                if (ordered.Any(e => e.Id == sources[chosen.Piece] && e.Recipe != null)) continue;
+                var recipe = ordered.FirstOrDefault(e => e.Recipe != null && e.Recipe.Any(CrossedOverlay)
+                    && e.Pieces.FirstOrDefault(p => p.Piece == chosen.Piece) is { } rp && chosen.Slots.All(rp.Slots.Contains));
+                if (recipe == null) continue;
+                sources[chosen.Piece] = recipe.Id;
+                pieces[i] = chosen with { Slots = recipe.Pieces.First(p => p.Piece == chosen.Piece).Slots };
+            }
+            bool recipeOnly = ordered.All(e => e.Recipe != null);
+            if (ordered.Count == 1) return first with { PieceSources = sources, RecipeOnly = recipeOnly };
             pieces = pieces.OrderBy(p => Array.IndexOf(PieceOrder, p.Piece) is var i and >= 0 ? i : 99).ToList();
             var character = ordered.Select(e => e.Character).FirstOrDefault(c => c != null);
             bool isCharacter = ordered.Any(e => e.IsCharacter) || (pieces.Any(p => p.Piece == "Head")
@@ -363,9 +378,16 @@ public sealed partial class Library : IDisposable
                 Id = $"{(first.HighDetail ? "hd" : "lo")}:{bundles}:{first.Gender}:{first.Name}",
                 Bundle = bundles, Pieces = pieces, Character = character,
                 DisplayName = DisplayName(first.Name, pieces, character),
-                IsCharacter = isCharacter, PieceItems = items, PieceSources = sources,
+                IsCharacter = isCharacter, PieceItems = items, PieceSources = sources, RecipeOnly = recipeOnly,
             };
         }).ToList();
+
+    // Le slot reçoit un overlay d'un autre nom que le sien (cheveux habillés de l'overlay du chapeau) :
+    // seule la recette le sait. Les overlays de peau et les autres cas restent appariés par les noms (PBR compris).
+    static bool CrossedOverlay(RecipePart rp) => rp.Overlay != null && !BaseOverlay().IsMatch(rp.Overlay)
+        && Words(rp.SlotName) != Words(rp.Overlay);
+
+    static string Words(string name) => OutfitReader.OverlayKey(name).Split('|')[0];
 
     const string RecipeLabel = "recette";
     // Source des slots et overlays rangés dans les données de l'APK plutôt que dans un bundle
@@ -565,7 +587,7 @@ public sealed partial class Library : IDisposable
         foreach (var o in unique)
         {
             // Tenues tirées des recettes : elles ne servent qu'à porter des ID d'objets (voir plus bas)
-            if (RecipeOnly(o)) continue;
+            if (o.RecipeOnly) continue;
             var slots = new Dictionary<string, string>();
             foreach (var p in o.Pieces)
             {
@@ -637,8 +659,6 @@ public sealed partial class Library : IDisposable
     }
 
     Dictionary<long, List<(string Key, string Piece)>> _itemIndex = [];
-
-    bool RecipeOnly(OutfitEntry o) => o.PieceSources.Values.All(id => _entryById.GetValueOrDefault(id)?.Recipe != null);
 
     static readonly Dictionary<string, string[]> BrowseTypes = new()
     {
