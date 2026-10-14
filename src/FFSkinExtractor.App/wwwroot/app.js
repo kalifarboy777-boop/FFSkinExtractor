@@ -25,6 +25,8 @@ const state = {
   character: null,     // clé « Genre:Tenue » ou null pour le personnage de base
   bundle: null,        // valeur du bundle appliqué (affichage seulement)
   slots: {},           // emplacement → ID d'objet saisi
+  emote: null,         // clé de l'emote jouée, ou null
+  emotes: [],
   options: { base: true, skinned: true, pbr: true, textures: false },
   status: null,
   lookups: {},         // ID inconnu des fichiers → infos ItemID2
@@ -290,6 +292,8 @@ $('openFolder').onclick = () => api('open-folder', {}).catch(err => toast(err.me
 // ---------------------------------------------------------------------------
 async function loadCatalog() {
   state.catalog = await (await api('catalog')).json();
+  try { state.emotes = await (await api('emotes')).json(); } catch { state.emotes = []; }
+  if (state.emote && !state.emotes.some(e => e.key === state.emote)) state.emote = null;
   if (state.character && !state.catalog.characters.some(c => c.key === state.character)) state.character = null;
   render();
   requestModel();
@@ -305,11 +309,12 @@ function look() {
   return {
     gender: state.gender, highDetail: state.hd, character: state.character, slots: state.slots,
     base: state.options.base, skinned: state.options.skinned, pbr: state.options.pbr,
+    emote: state.emote,
   };
 }
 
 function save() {
-  store.set('look', { gender: state.gender, hd: state.hd, character: state.character, bundle: state.bundle, slots: state.slots });
+  store.set('look', { gender: state.gender, hd: state.hd, character: state.character, bundle: state.bundle, slots: state.slots, emote: state.emote });
   store.set('options', state.options);
 }
 
@@ -320,6 +325,7 @@ function render() {
   renderCharacterPicker();
   renderBundlePicker();
   renderSlotFields();
+  renderEmotePicker();
   renderCurrent();
   save();
 }
@@ -424,6 +430,36 @@ function renderCharacterPicker() {
     showPopover(host, {
       options, selected: state.character ?? '', placeholder: 'Rechercher un personnage…',
       onPick: o => { state.character = o.value || null; render(); requestModel(); },
+    });
+  };
+  host.append(btn);
+}
+
+// ---- Emote ----
+const currentEmote = () => state.emotes.find(e => e.key === state.emote) ?? null;
+const genderLabel = g => g === 'Male' ? 'Homme' : 'Femme';
+function renderEmotePicker() {
+  const host = $('emotePicker');
+  host.innerHTML = '';
+  const e = currentEmote();
+  const btn = el('button', 'choice');
+  btn.type = 'button';
+  btn.append(thumb(null, e ? initials(e.name) : '–'));
+  const body = el('div');
+  body.style.minWidth = '0';
+  body.append(el('div', 'title', e ? e.name : 'Aucune emote'));
+  body.append(el('div', 'sub', e ? e.genders.map(genderLabel).join(' et ') : `${state.emotes.length} emotes lisibles`));
+  btn.append(body, el('span', 'chev', '▾'));
+  btn.onclick = () => {
+    if (host.classList.contains('open')) return closePickers();
+    const options = [{ value: '', title: 'Aucune emote', sub: 'Pose de repos' },
+      ...state.emotes.map(x => ({
+        value: x.key, title: x.name,
+        sub: x.genders.includes(state.gender) ? x.genders.map(genderLabel).join(' et ') : `Animation ${genderLabel(x.genders[0]).toLowerCase()} seulement`,
+      }))];
+    showPopover(host, {
+      options, selected: state.emote ?? '', placeholder: 'Rechercher une emote…',
+      onPick: o => { state.emote = o.value || null; render(); requestModel(); },
     });
   };
   host.append(btn);
@@ -638,7 +674,11 @@ function resize() {
 new ResizeObserver(resize).observe(canvas.parentElement);
 resize();
 
+const clock = new THREE.Clock();
+let mixer = null, emoteAction = null;
 renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  if (mixer && emoteAction && !emoteAction.paused) mixer.update(dt);
   if (view.rotate && model) model.rotation.y += 0.006;
   controls.update();
   renderer.render(scene, camera);
@@ -662,7 +702,15 @@ function showModel(gltf) {
     model.traverse(o => { o.geometry?.dispose(); [].concat(o.material ?? []).forEach(m => { Object.values(m).forEach(v => v?.isTexture && v.dispose()); m.dispose(); }); });
   }
   if (skeletonHelper) { scene.remove(skeletonHelper); skeletonHelper = null; }
+  mixer?.stopAllAction(); mixer = null; emoteAction = null;
   model = gltf.scene;
+  if (gltf.animations?.length) {
+    mixer = new THREE.AnimationMixer(model);
+    emoteAction = mixer.clipAction(gltf.animations[0]);
+    emoteAction.play();
+  }
+  $('toolPlay').classList.toggle('hidden', !emoteAction);
+  setPlayIcon();
   let tris = 0, bones = new Set(), mats = new Set();
   model.traverse(o => {
     if (!o.isMesh) return;
@@ -721,6 +769,12 @@ const toggle = (id, keyName, apply) => {
 toggle('toolRotate', 'rotate', () => { if (!view.rotate && model) model.rotation.y = 0; });
 toggle('toolWire', 'wire', () => model?.traverse(o => o.isMesh && [].concat(o.material).forEach(m => m.wireframe = view.wire)));
 toggle('toolSkeleton', 'skeleton', () => { if (skeletonHelper) skeletonHelper.visible = view.skeleton; });
+function setPlayIcon() {
+  const playing = emoteAction && !emoteAction.paused;
+  $('toolPlayIcon').setAttribute('d', playing ? 'M9 7v10M15 7v10' : 'M8 6l10 6-10 6z');
+  $('toolPlay').classList.toggle('on', !!playing);
+}
+$('toolPlay').onclick = () => { if (emoteAction) { emoteAction.paused = !emoteAction.paused; setPlayIcon(); } };
 $('toolReset').onclick = () => model && frame(model);
 $('toolLight').onclick = () => $('viewer').classList.toggle('light');
 $('toolShot').onclick = () => {

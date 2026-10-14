@@ -92,6 +92,9 @@ app.MapPost("/api/settings", (AppSettings s) =>
 
 app.MapGet("/api/outfits", () => library.Outfits);
 
+// Emotes lues dans les fichiers du jeu
+app.MapGet("/api/emotes", () => library.Emotes);
+
 app.MapGet("/api/catalog", () => new
 {
     characters = library.Characters,

@@ -134,6 +134,8 @@ public sealed partial class GameBundle : IDisposable
 
     public IEnumerable<AssetFileInfo> Textures() => _file.file.GetAssetsOfType(AssetClassID.Texture2D);
 
+    public IEnumerable<AssetFileInfo> OfType(AssetClassID type) => _file.file.GetAssetsOfType(type);
+
     public AssetFileInfo? GetInfo(long pathId) => _file.file.GetAssetInfo(pathId);
 
     public AssetTypeValueField BaseField(AssetFileInfo info) => _am.GetBaseField(_file, info);

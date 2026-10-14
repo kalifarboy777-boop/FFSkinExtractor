@@ -1,3 +1,4 @@
+using FFSkinExtractor.Core.Animation;
 using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using FFSkinExtractor.Core;
@@ -59,7 +60,10 @@ public sealed record Arrival(string Name, string Gender, string? Bundle, Diction
 
 /// <summary>Ce que l'interface demande : un personnage, et des objets par emplacement (Cheveux, Masque, Haut…).</summary>
 public sealed record Look(string Gender, bool HighDetail, string? Character, Dictionary<string, string>? Slots,
-    bool Base = true, bool Skinned = true, bool Pbr = true);
+    bool Base = true, bool Skinned = true, bool Pbr = true, string? Emote = null);
+
+/// <summary>Une emote, avec les genres pour lesquels le jeu a son animation.</summary>
+public sealed record EmoteEntry(string Key, string Name, IReadOnlyList<string> Genders);
 
 /// <summary>Pièces choisies : pour chaque type de pièce, la tenue d'où elle vient.</summary>
 public sealed record Selection(string Gender, bool HighDetail, Dictionary<string, string> Pieces,
@@ -70,6 +74,8 @@ public sealed record Selection(string Gender, bool HighDetail, Dictionary<string
     public string? Character { get; init; }
     /// <summary>Maquillage choisi (nom interne « Cos_Aurora_White »), ou null.</summary>
     public string? FacePaint { get; init; }
+    /// <summary>Emote jouée (clé de <see cref="EmoteEntry"/>), ou null.</summary>
+    public string? Emote { get; init; }
 }
 
 /// <summary>Overlay de maquillage ou de racines de cheveux, trouvé dans un bundle (ou dans l'APK si Bundle est null).</summary>
@@ -127,6 +133,10 @@ public sealed partial class Library : IDisposable
     public IReadOnlyList<CharacterEntry> Characters { get; private set; } = [];
     public IReadOnlyList<SlotItem> SlotItems { get; private set; } = [];
     public IReadOnlyList<BundleEntry> Bundles { get; private set; } = [];
+    public IReadOnlyList<EmoteEntry> Emotes { get; private set; } = [];
+    // Clip de chaque emote par genre : bundle et objet
+    Dictionary<(string Key, string Gender), (string Bundle, long PathId)> _emoteClips = [];
+    readonly Dictionary<(string, string), EmoteClip> _emoteCache = [];
     public ItemCatalog? Catalog { get; private set; }
     public string? GamePackage { get; private set; }
     public int BundleCount { get; private set; }
@@ -272,6 +282,8 @@ public sealed partial class Library : IDisposable
             Outfits = Merge(entries).OrderBy(e => e.Gender).ThenBy(e => e.DisplayName, StringComparer.OrdinalIgnoreCase).ToList();
             BuildCatalogViews();
             BuildFacePaintViews();
+            Message = "Lecture des emotes…";
+            ScanEmotes(files);
 
             if (data != null)
             {
@@ -688,6 +700,68 @@ public sealed partial class Library : IDisposable
     Dictionary<long, List<(string Key, string Piece)>> _itemIndex = [];
 
     /// <summary>
+    /// Emotes des bundles « optionalab_emote… » : un clip par genre (« Male_DAB », « Female_DAB »).
+    /// Les bundles chiffrés par le jeu ne sont pas lus.
+    /// </summary>
+    void ScanEmotes(List<string> files)
+    {
+        var clips = new Dictionary<(string, string), (string, long)>();
+        var names = new Dictionary<string, string>();
+        var bundles = files.Where(EmoteReader.IsEmoteBundle).Where(GameBundle.IsDownloaded)
+            .GroupBy(f => Path.GetFileName(f).Split('.')[0], StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.OrderByDescending(File.GetLastWriteTimeUtc).First()).OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToList();
+        var found = new List<(string Bundle, string Name, string Gender, long PathId)>[bundles.Count];
+        Parallel.For(0, bundles.Count, i =>
+        {
+            try
+            {
+                using var b = new GameBundle(bundles[i]);
+                found[i] = EmoteReader.List(b).Select(c => (bundles[i], c.Name, c.Gender, c.PathId)).ToList();
+            }
+            catch (Exception) { found[i] = []; }
+        });
+        foreach (var (bundle, clip, gender, pathId) in found.SelectMany(f => f))
+        {
+            // « Male_Cut Throat », « Female_CutThroat » → même emote
+            string display = EmoteName(clip);
+            string key = Regex.Replace(display.ToLowerInvariant(), "[^a-z0-9]", "");
+            if (key.Length == 0) continue;
+            names.TryAdd(key, display);
+            clips.TryAdd((key, gender), (bundle, pathId));
+        }
+        _emoteClips = clips;
+        lock (_emoteCache) _emoteCache.Clear();
+        Emotes = names.Select(n => new EmoteEntry(n.Key, n.Value,
+                new[] { "Male", "Female" }.Where(g => clips.ContainsKey((n.Key, g))).ToList()))
+            .OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    static string EmoteName(string clip)
+    {
+        string name = Regex.Replace(clip, "^(Female|Male)_?", "", RegexOptions.IgnoreCase);
+        name = Regex.Replace(name, "^Emote_", "", RegexOptions.IgnoreCase).Replace('_', ' ').Trim();
+        // « LetsGroove » → « Lets Groove »
+        return Regex.Replace(name, "(?<=[a-z])(?=[A-Z])", " ");
+    }
+
+    /// <summary>Animation d'une emote pour un genre (celle de l'autre genre si le jeu n'a que celle-là).</summary>
+    EmoteClip? EmoteFor(string key, string gender)
+    {
+        lock (_emoteCache)
+        {
+            if (_emoteCache.TryGetValue((key, gender), out var cached)) return cached;
+            string other = gender == "Male" ? "Female" : "Male";
+            if (!_emoteClips.TryGetValue((key, gender), out var source) && !_emoteClips.TryGetValue((key, other), out source)) return null;
+            try
+            {
+                using var b = new GameBundle(source.Bundle);
+                return _emoteCache[(key, gender)] = EmoteReader.Read(b, source.PathId, gender);
+            }
+            catch (Exception) { return null; }
+        }
+    }
+
+    /// <summary>
     /// La table « Clothes » ne relie que les hauts. Les autres pièces du même ensemble (« The Streets (Shoes) »,
     /// « The Streets (Pants) ») suivent le haut (« The Streets (Jacket) ») vers la même tenue, plutôt qu'une tenue
     /// au nom voisin (« Cos_Hip_hop » au lieu de « Cos_Hip_hop2 »).
@@ -924,7 +998,8 @@ public sealed partial class Library : IDisposable
             name ??= entry.Name;
         }
         var sel = new Selection(look.Gender, look.HighDetail, pieces, look.Base, look.Skinned, look.Pbr)
-            { Name = $"{look.Gender}_{name ?? "Base"}{(look.HighDetail ? "_HD" : "")}", Character = character, FacePaint = facePaint };
+            { Name = $"{look.Gender}_{name ?? "Base"}{(look.HighDetail ? "_HD" : "")}", Character = character, FacePaint = facePaint,
+              Emote = look.Emote is { Length: > 0 } e && Emotes.Any(x => x.Key == e) ? e : null };
         return (sel, unknown);
     }
 
@@ -950,10 +1025,11 @@ public sealed partial class Library : IDisposable
     public async Task<byte[]> BuildAsync(Selection sel, CancellationToken ct = default)
     {
         string key = string.Join("|", sel.Gender, sel.HighDetail, sel.Base, sel.Skinned, sel.Pbr,
-            string.Join(",", sel.Pieces.OrderBy(p => p.Key).Select(p => p.Key + "=" + p.Value)), sel.Name, sel.Character, sel.FacePaint);
+            string.Join(",", sel.Pieces.OrderBy(p => p.Key).Select(p => p.Key + "=" + p.Value)), sel.Name, sel.Character, sel.FacePaint, sel.Emote);
+        var emote = sel.Emote == null ? null : EmoteFor(sel.Emote, sel.Gender);
         if (_modelCache.TryGetValue(key, out var cached)) return cached;
         var glb = await WithPartsAsync(sel, (name, parts) =>
-            GlbExporter.Build(name, sel.Gender, parts, new ExportOptions { Skinned = sel.Skinned, Pbr = sel.Pbr })
+            GlbExporter.Build(name, sel.Gender, parts, new ExportOptions { Skinned = sel.Skinned || emote != null, Pbr = sel.Pbr, Emote = emote })
                 .ToGltf2().WriteGLB().ToArray(), ct);
         if (_modelCache.Count > 24) _modelCache.Clear();
         _modelCache[key] = glb;

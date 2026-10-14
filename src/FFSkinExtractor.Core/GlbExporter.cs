@@ -16,6 +16,9 @@ public sealed record ExportOptions
 
     /// <summary>Ajoute normales, rugosité/métal et occlusion quand le jeu les fournit.</summary>
     public bool Pbr { get; init; } = true;
+
+    /// <summary>Emote jouée par le squelette (piste d'animation du GLB), ou null.</summary>
+    public Animation.EmoteClip? Emote { get; init; }
 }
 
 /// <summary>Exporte une tenue en GLB : maillages, textures, normales lissées et squelette.</summary>
@@ -73,7 +76,34 @@ public static class GlbExporter
             else scene.AddRigidMesh(mesh, Matrix4x4.Identity);
         }
         if (rig != null && parts.Count == 0) scene.AddNode(rig.Root);
+        if (rig != null && options.Emote is { } emote) Animate(rig, emote);
         return scene;
+    }
+
+    /// <summary>Clés de l'emote sur les articulations du même nom (Unity → glTF : miroir sur X, comme le squelette).</summary>
+    static void Animate(RigBuilder rig, Animation.EmoteClip emote)
+    {
+        string track = emote.Name;
+        var byName = rig.Joints.GroupBy(j => j.Name).ToDictionary(g => g.Key, g => g.First());
+        foreach (var t in emote.Tracks)
+        {
+            if (!byName.TryGetValue(t.Bone, out var node)) continue;
+            if (t.Positions.Count > 0)
+            {
+                var curve = node.UseTranslation(track);
+                foreach (var (time, p) in t.Positions) curve.SetPoint(time, new Vector3(-p.X, p.Y, p.Z));
+            }
+            if (t.Rotations.Count > 0)
+            {
+                var curve = node.UseRotation(track);
+                foreach (var (time, r) in t.Rotations) curve.SetPoint(time, new Quaternion(r.X, -r.Y, -r.Z, r.W));
+            }
+            if (t.Scales.Count > 0)
+            {
+                var curve = node.UseScale(track);
+                foreach (var (time, sc) in t.Scales) curve.SetPoint(time, sc);
+            }
+        }
     }
 
     // Repère habituel des maillages : Z vers le haut dans les données, déjà converti par le décodeur
