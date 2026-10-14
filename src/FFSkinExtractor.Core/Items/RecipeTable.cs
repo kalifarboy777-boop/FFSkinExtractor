@@ -14,17 +14,36 @@ public readonly record struct RecipePair(uint Slot, uint Overlay);
 /// </summary>
 public sealed class RecipeTable
 {
-    // Premier octet de l'en-tête qui suit le nom (hash) de chaque recette
-    static readonly HashSet<byte> HeaderFlags = [0x01, 0x02, 0x03, 0x20, 0x21, 0x22, 0x23, 0x40, 0x41, 0x42, 0x43, 0x60, 0x61, 0x62, 0x63];
+    // Quatrième octet de l'en-tête : la variante (femme simplifiée, femme détaillée, homme simplifié, homme détaillé)
+    static readonly byte[] Variants = [0x02, 0x04, 0x08, 0x10];
 
     public IReadOnlyDictionary<uint, List<RecipePair>> Recipes { get; }
 
     /// <summary>Recettes de combinaisons intégrales (type de pièce 4 : « Goliath_A », mascottes) : elles cachent les autres vêtements.</summary>
     public IReadOnlySet<uint> FullBody { get; }
 
-    RecipeTable(Dictionary<uint, List<RecipePair>> recipes, HashSet<uint> fullBody) => (Recipes, FullBody) = (recipes, fullBody);
+    readonly Dictionary<uint, (byte Variant, uint Mask)> _hidden;
 
-    public static RecipeTable Empty { get; } = new([], []);
+    RecipeTable(Dictionary<uint, List<RecipePair>> recipes, HashSet<uint> fullBody, Dictionary<uint, (byte, uint)> hidden) =>
+        (Recipes, FullBody, _hidden) = (recipes, fullBody, hidden);
+
+    public static RecipeTable Empty { get; } = new([], [], []);
+
+    /// <summary>
+    /// Places, dans la recette de base du personnage (« MaleBaseRecipe_max_N »…), des slots que le vêtement cache
+    /// quand il est porté : le haut cache le torse nu, un chapeau les cheveux de base, une combinaison tout le corps.
+    /// L'en-tête de la recette les donne sous forme de bits, 7 par variante (femme simplifiée à partir du bit 1,
+    /// femme détaillée du bit 8, homme simplifié du bit 15, homme détaillé du bit 22).
+    /// </summary>
+    public IReadOnlyList<int> HiddenBaseSlots(uint recipe)
+    {
+        if (!_hidden.TryGetValue(recipe, out var h)) return [];
+        int shift = h.Variant switch { 0x02 => 1, 0x04 => 8, 0x08 => 15, _ => 22 };
+        var result = new List<int>();
+        for (int i = 0; i < 7; i++)
+            if ((h.Mask >> (shift + i) & 1) != 0) result.Add(i);
+        return result;
+    }
 
     /// <summary>
     /// Lit les recettes. Une recette : hash de son nom, un en-tête de 4 à 16 octets, puis des paires
@@ -35,8 +54,11 @@ public sealed class RecipeTable
     {
         var recipes = new Dictionary<uint, List<RecipePair>>();
         var fullBody = new HashSet<uint>();
-        // En-tête : drapeau, petit entier, type de pièce (2 cheveux, 3 accessoire, 4 visage, 5 haut, 6 bas, 7 chaussures)
-        bool IsHeader(ReadOnlySpan<byte> d, int p) => p + 3 <= d.Length && HeaderFlags.Contains(d[p]) && d[p + 1] <= 3 && d[p + 2] is >= 2 and <= 7;
+        var hidden = new Dictionary<uint, (byte, uint)>();
+        // En-tête : drapeaux, petit entier, type de pièce (2 cheveux, 3 accessoire, 4 combinaison, 5 haut, 6 bas,
+        // 7 chaussures), variante
+        bool IsHeader(ReadOnlySpan<byte> d, int p) => p + 4 <= d.Length && (d[p] & 0x0F) is >= 1 and <= 8 && d[p + 1] <= 15
+            && d[p + 2] is >= 2 and <= 7 && Array.IndexOf(Variants, d[p + 3]) >= 0;
         uint U32(ReadOnlySpan<byte> d, int p) => BinaryPrimitives.ReadUInt32LittleEndian(d[p..]);
 
         int p = 4;
@@ -60,10 +82,16 @@ public sealed class RecipeTable
                 q += 8;
             }
             if (pairs.Count == 0) { p++; continue; }
-            if (recipes.TryAdd(U32(data, p), pairs) && data[p + 6] == 4) fullBody.Add(U32(data, p));
+            uint name = U32(data, p);
+            if (recipes.TryAdd(name, pairs))
+            {
+                if (data[p + 6] == 4) fullBody.Add(name);
+                int length = q - pairs.Count * 8 - (p + 4);
+                if (length >= 8) hidden[name] = (data[p + 7], U32(data, p + 4 + (length == 12 ? 8 : 4)));
+            }
             p = q;
         }
-        return new RecipeTable(recipes, fullBody);
+        return new RecipeTable(recipes, fullBody, hidden);
     }
 
     const string ConfigEntry = "assets/android/gameassetbundles/config/clothesrecipesbytes";

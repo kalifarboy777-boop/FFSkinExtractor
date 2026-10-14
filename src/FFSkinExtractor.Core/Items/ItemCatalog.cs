@@ -164,11 +164,46 @@ public sealed class ItemCatalog
                 foreach (int i in candidates)
                 {
                     var (piece, words, key) = prepared[i];
-                    if (!SamePiece(item.Piece, piece) || !key.All(tokens.Contains)) continue;
+                    // ItemID2 range coiffes et masques sous le même préfixe (211) : un « masque » peut être un slot de cheveux
+                    bool crossed = !SamePiece(item.Piece, piece);
+                    if ((crossed && !HeadwearPieces(item.Piece, piece)) || !key.All(tokens.Contains)) continue;
                     int extra = tokens.Count(w => !words.Contains(w) && !IconNoise.Contains(w) && !PieceWords.Contains(w) && !w.All(char.IsDigit));
-                    int score = 10 * key.Count + words.Count(w => WeakWords.Contains(w) && tokens.Contains(w)) - 3 * extra;
+                    int score = 10 * key.Count + words.Count(w => WeakWords.Contains(w) && tokens.Contains(w)) - 3 * extra - (crossed ? 1 : 0);
                     if (score > bestScore || (score == bestScore && best >= 0 && i < best)) (best, bestScore) = (i, score);
                 }
+            }
+            if (best >= 0) result[item.Id] = best;
+        }
+        return result;
+    }
+
+    static bool HeadwearPieces(string itemPiece, string partPiece) =>
+        itemPiece is "Hair" or "Accessory" && partPiece is "Hair" or "Accessory";
+
+    /// <summary>
+    /// Second passage pour les vêtements restés sans modèle : l'icône ne nomme que le début de la tenue
+    /// (« Icon_avatar_male_top_cos_ninja » pour « Cos_Ninja_Black », « Icon_avatar_cos_cow » pour « cos_dinosaur_cow »).
+    /// La tenue dont le nom contient tous les mots de l'icône avec le moins de mots en plus (deux au plus) l'emporte.
+    /// </summary>
+    public Dictionary<long, int> ContainingSources(string gender, IReadOnlyList<(string Name, string Piece)> sources, Func<GameItem, bool> wanted)
+    {
+        var prepared = sources.Select(s => (s.Piece, Words: Tokens(s.Name))).ToList();
+        var result = new Dictionary<long, int>();
+        foreach (var (item, tokens) in _indexed)
+        {
+            if (item.Gender != null && !item.Gender.Equals(gender, StringComparison.OrdinalIgnoreCase)) continue;
+            if (item.Type != "CLOTHES" || !wanted(item)) continue;
+            var key = tokens.Where(w => !IconNoise.Contains(w) && !PieceWords.Contains(w) && !WeakWords.Contains(w)).ToList();
+            if (!key.Any(w => w.Length >= 3 && !w.All(char.IsDigit))) continue;
+            int best = -1, bestExtra = 3, bestPenalty = 0;
+            for (int i = 0; i < prepared.Count; i++)
+            {
+                var (piece, words) = prepared[i];
+                bool crossed = !SamePiece(item.Piece, piece);
+                if ((crossed && !HeadwearPieces(item.Piece, piece)) || !key.All(words.Contains)) continue;
+                int extra = words.Count(w => !key.Contains(w) && !WeakWords.Contains(w) && !PieceWords.Contains(w));
+                int penalty = crossed ? 1 : 0;
+                if (extra < bestExtra || (extra == bestExtra && penalty < bestPenalty)) (best, bestExtra, bestPenalty) = (i, extra, penalty);
             }
             if (best >= 0) result[item.Id] = best;
         }

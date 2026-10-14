@@ -97,7 +97,7 @@ public sealed partial class Library : IDisposable
     readonly object _sync = new();
     readonly LinkedList<(string Key, GameBundle Bundle, List<Outfit> Outfits)> _open = new();
     readonly ConcurrentDictionary<string, byte[]> _modelCache = new();
-    readonly Dictionary<(string, bool), List<OutfitPart>> _baseParts = [];
+    readonly Dictionary<(string, bool), List<(OutfitPart Part, int Index)>> _baseParts = [];
     readonly Dictionary<bool, SkinTextures> _skins = [];
     Dictionary<string, string> _cabToBundle = new(StringComparer.OrdinalIgnoreCase);
     List<HeadLayerRef> _headLayers = [];
@@ -110,6 +110,8 @@ public sealed partial class Library : IDisposable
     Dictionary<long, List<(string Key, string Piece)>> _tableLinks = [];
     // Slots des combinaisons intégrales : portées, elles remplacent tous les autres vêtements
     HashSet<string> _fullBodySlots = [];
+    // Places dans la recette de base des morceaux du corps que cache chaque slot de vêtement, d'après les recettes
+    Dictionary<string, HashSet<int>> _hiddenBySlot = [];
     // Slots des vêtements de base (débardeur, T-shirt col V…) rangés dans les données de l'APK, par slotName
     Dictionary<string, (DataObject Obj, SlotInfo Info)> _apkSlots = [];
     Task<GameData?>? _gameData;
@@ -237,6 +239,16 @@ public sealed partial class Library : IDisposable
             _apkSlots = AddApkParts(data, slotRefs, overlayByHash);
             var recipes = await recipeBytes is { } rb ? RecipeTable.Parse(rb, slotRefs.Keys.ToHashSet()) : RecipeTable.Empty;
             _fullBodySlots = recipes.FullBody.Select(h => slotRefs[recipes.Recipes[h][0].Slot].SlotName).ToHashSet(StringComparer.Ordinal);
+            var hiddenBySlot = new Dictionary<string, HashSet<int>>(StringComparer.Ordinal);
+            foreach (var (hash, pairs) in recipes.Recipes)
+                if (recipes.HiddenBaseSlots(hash) is { Count: > 0 } hiddenSlots)
+                    foreach (var pair in pairs)
+                    {
+                        string slotName = slotRefs[pair.Slot].SlotName;
+                        if (!hiddenBySlot.TryGetValue(slotName, out var set)) hiddenBySlot[slotName] = set = [];
+                        set.UnionWith(hiddenSlots);
+                    }
+            _hiddenBySlot = hiddenBySlot;
             var byRecipe = new Dictionary<uint, (string Key, string Piece)>();
             entries.AddRange(RecipeEntries(recipes, slotRefs, overlayByHash, byRecipe));
             var tableLinks = new Dictionary<long, List<(string Key, string Piece)>>();
@@ -350,10 +362,13 @@ public sealed partial class Library : IDisposable
             var sources = new Dictionary<string, string>();
             var pieces = new List<PieceEntry>();
             var items = new Dictionary<string, List<ItemRef>>();
-            foreach (var e in ordered)
-                foreach (var p in e.Pieces)
-                    if (sources.TryAdd(p.Piece, e.Id))
+            // Pour chaque pièce, le maillage au nom de la tenue (« Female_Top_Cos_Commissar ») passe avant celui
+            // d'une autre tenue que le coloris habille (« Female_Top_Cos_Riotcontrol » avec l'overlay « Commissar »)
+            foreach (var e in ordered.OrderByDescending(e => e.Pieces.Count(p => OwnSlots(p, e.Name))))
+                foreach (var p in e.Pieces.OrderByDescending(p => OwnSlots(p, e.Name)))
+                    if (!sources.ContainsKey(p.Piece) && (OwnSlots(p, e.Name) || !ordered.Any(o => o.Pieces.Any(q => q.Piece == p.Piece && OwnSlots(q, o.Name)))))
                     {
+                        sources[p.Piece] = e.Id;
                         pieces.Add(p);
                         items[p.Piece] = e.PieceItems.GetValueOrDefault(p.Piece) ?? [];
                     }
@@ -384,6 +399,9 @@ public sealed partial class Library : IDisposable
                 IsCharacter = isCharacter, PieceItems = items, PieceSources = sources, RecipeOnly = recipeOnly,
             };
         }).ToList();
+
+    static bool OwnSlots(PieceEntry p, string outfitName) =>
+        p.Slots.Any(s => s.Contains(outfitName, StringComparison.OrdinalIgnoreCase));
 
     // Le slot reçoit un overlay d'un autre nom que le sien (cheveux habillés de l'overlay du chapeau) :
     // seule la recette le sait. Les overlays de peau et les autres cas restent appariés par les noms (PBR compris).
@@ -639,6 +657,11 @@ public sealed partial class Library : IDisposable
                 var best = Catalog.BestSources(gender, sources.Select(s => (s.Outfit.Name, s.Piece)).ToList(),
                     i => i.Type == "CLOTHES" && !(index.TryGetValue(i.Id, out var l) && l.Any(t => t.Key.StartsWith(gender + ":"))), MinNameScore);
                 foreach (var (id, i) in best)
+                    Link(Catalog.Get(id)!, sources[i].Outfit.Key, sources[i].Piece, SlotOf(sources[i].Piece, false)!);
+                // Puis l'icône qui ne nomme que le début de la tenue (« cos_ninja » pour « Cos_Ninja_Black »)
+                var loose = Catalog.ContainingSources(gender, sources.Select(s => (s.Outfit.Name, s.Piece)).ToList(),
+                    i => !(index.TryGetValue(i.Id, out var l) && l.Any(t => t.Key.StartsWith(gender + ":"))));
+                foreach (var (id, i) in loose)
                     Link(Catalog.Get(id)!, sources[i].Outfit.Key, sources[i].Piece, SlotOf(sources[i].Piece, false)!);
             }
         }
@@ -973,7 +996,21 @@ public sealed partial class Library : IDisposable
             var parts = chosen;
             if (sel.Base && data != null)
             {
-                var baseParts = BaseParts(data, sel.Gender, sel.HighDetail);
+                // Comme dans le jeu, chaque vêtement porté cache les morceaux du corps de base que sa recette désigne
+                // (le haut cache le torse, un chapeau les cheveux, un masque de clown la tête)
+                var hidden = chosen.SelectMany(p => _hiddenBySlot.GetValueOrDefault(p.SlotName) ?? []).ToHashSet();
+                var allBase = BaseParts(data, sel.Gender, sel.HighDetail);
+                var baseParts = allBase.Where(p => !hidden.Contains(p.Index)).Select(p => p.Part).ToList();
+                // La tête et les cheveux d'un personnage tiennent la place de ceux du corps de base : cachés de même
+                // (masque intégral, casque), sauf la pièce qui les cache elle-même
+                var hiddenPieces = allBase.Where(p => hidden.Contains(p.Index) && p.Part.Piece is "Head" or "Hair").Select(p => p.Part.Piece).ToHashSet();
+                if (hiddenPieces.Count > 0 && sel.Character != null)
+                {
+                    string characterKey = sel.Gender + ":" + sel.Character;
+                    var keep = byOutfit.Where(c => !(c.OutfitKey == characterKey && hiddenPieces.Contains(c.Part.Piece) && !_hiddenBySlot.ContainsKey(c.Part.SlotName)))
+                        .Select(c => c.Part).ToHashSet();
+                    chosen = chosen.Where(keep.Contains).ToList();
+                }
                 if (suit != null) baseParts = baseParts.Where(p => p.Piece is not ("Top" or "Bottom" or "Shoe")).ToList();
                 parts = BaseCharacter.Compose(baseParts, chosen);
             }
@@ -996,14 +1033,14 @@ public sealed partial class Library : IDisposable
         }
     }
 
-    List<OutfitPart> BaseParts(GameData data, string gender, bool hd)
+    List<(OutfitPart Part, int Index)> BaseParts(GameData data, string gender, bool hd)
     {
         lock (_baseParts)
         {
             if (!_baseParts.TryGetValue((gender, hd), out var parts))
             {
-                parts = BaseCharacter.Build(data, gender, hd);
-                foreach (var p in parts) _ = p.Textures;
+                parts = BaseCharacter.BuildIndexed(data, gender, hd);
+                foreach (var p in parts) _ = p.Part.Textures;
                 _baseParts[(gender, hd)] = parts;
             }
             return parts;

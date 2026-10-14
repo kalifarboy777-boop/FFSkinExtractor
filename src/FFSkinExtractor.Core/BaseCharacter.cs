@@ -11,7 +11,11 @@ namespace FFSkinExtractor.Core;
 public static class BaseCharacter
 {
     /// <summary>Pièces du personnage de base.</summary>
-    public static List<OutfitPart> Build(GameData data, string gender, bool highDetail = true)
+    public static List<OutfitPart> Build(GameData data, string gender, bool highDetail = true) =>
+        BuildIndexed(data, gender, highDetail).Select(p => p.Part).ToList();
+
+    /// <summary>Pièces du personnage de base, avec leur place dans la recette de base (que les vêtements désignent pour la cacher).</summary>
+    public static List<(OutfitPart Part, int Index)> BuildIndexed(GameData data, string gender, bool highDetail = true)
     {
         string g = gender.Equals("Female", StringComparison.OrdinalIgnoreCase) ? "Female" : "Male";
         var recipeObj = data.Find($"{g}BaseRecipe_max{(highDetail ? "_N" : "")}", AssetClassID.MonoBehaviour)
@@ -29,9 +33,11 @@ public static class BaseCharacter
 
         var skin = SkinTextures.From(data, highDetail);
         var meshes = new Dictionary<DataObject, UmaMesh>();
-        var parts = new List<OutfitPart>();
+        var parts = new List<(OutfitPart, int)>();
+        int index = -1;
         foreach (var (slotName, overlayName) in recipe)
         {
+            index++;
             if (!slots.TryGetValue(slotName, out var slot)) continue;
             string piece = PieceOfBaseSlot(slotName);
             if (piece == "") continue;
@@ -48,7 +54,7 @@ public static class BaseCharacter
                 : skin.For(g) ?? TextureSet.Empty;
             var material = data.Resolve(slot.Obj.File, slot.Info.Material.FileId, slot.Info.Material.PathId)?.Name ?? "";
             var kind = material.Contains("Hair") || material.Contains("CutOff") ? MaterialKind.Cutout : MaterialKind.Opaque;
-            parts.Add(new OutfitPart(slot.Info.ObjectName, mesh, slot.Info.SubmeshIndex, textures, isSkin, kind, piece));
+            parts.Add((new OutfitPart(slot.Info.ObjectName, mesh, slot.Info.SubmeshIndex, textures, isSkin, kind, piece), index));
         }
         return parts;
     }
