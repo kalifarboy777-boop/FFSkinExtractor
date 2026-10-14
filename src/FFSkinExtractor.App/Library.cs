@@ -108,6 +108,8 @@ public sealed partial class Library : IDisposable
     Dictionary<long, List<(string Gender, string Name)>> _facePaintIndex = [];
     // ID d'objet → tenue et pièce, d'après la table « Clothes » et les recettes du jeu
     Dictionary<long, List<(string Key, string Piece)>> _tableLinks = [];
+    // Slots des combinaisons intégrales : portées, elles remplacent tous les autres vêtements
+    HashSet<string> _fullBodySlots = [];
     // Slots des vêtements de base (débardeur, T-shirt col V…) rangés dans les données de l'APK, par slotName
     Dictionary<string, (DataObject Obj, SlotInfo Info)> _apkSlots = [];
     Task<GameData?>? _gameData;
@@ -234,6 +236,7 @@ public sealed partial class Library : IDisposable
                     overlayByHash.TryAdd(Crc32.Hash(overlay), (bundles[i], overlay));
             _apkSlots = AddApkParts(data, slotRefs, overlayByHash);
             var recipes = await recipeBytes is { } rb ? RecipeTable.Parse(rb, slotRefs.Keys.ToHashSet()) : RecipeTable.Empty;
+            _fullBodySlots = recipes.FullBody.Select(h => slotRefs[recipes.Recipes[h][0].Slot].SlotName).ToHashSet(StringComparer.Ordinal);
             var byRecipe = new Dictionary<uint, (string Key, string Piece)>();
             entries.AddRange(RecipeEntries(recipes, slotRefs, overlayByHash, byRecipe));
             var tableLinks = new Dictionary<long, List<(string Key, string Piece)>>();
@@ -952,19 +955,28 @@ public sealed partial class Library : IDisposable
         {
             var data = _gameData == null ? null : await _gameData;
             var skin = data == null ? null : Skin(data, sel.HighDetail);
-            var chosen = new List<OutfitPart>();
+            var byOutfit = new List<(string OutfitKey, OutfitPart Part)>();
             foreach (var (piece, outfitId) in sel.Pieces)
             {
                 var entry = Get(outfitId) ?? throw new KeyNotFoundException($"Tenue inconnue : {outfitId}");
                 var outfit = LoadOutfit(entry, skin);
-                chosen.AddRange(outfit.Parts.Where(p => p.Piece == piece));
+                byOutfit.AddRange(outfit.Parts.Where(p => p.Piece == piece).Select(p => (entry.Key, p)));
             }
+            // Combinaison intégrale (« Attack Titan », mascottes) : comme dans le jeu, les vêtements des autres
+            // tenues disparaissent, et le corps de base ne garde que la tête et les cheveux qu'elle ne remplace pas
+            var suit = byOutfit.FirstOrDefault(c => _fullBodySlots.Contains(c.Part.SlotName)).OutfitKey;
+            if (suit != null) byOutfit = byOutfit.Where(c => c.OutfitKey == suit).ToList();
+            var chosen = byOutfit.Select(c => c.Part).ToList();
             // Décodage des textures tant que les bundles sont ouverts
             foreach (var part in chosen) _ = part.Textures;
 
             var parts = chosen;
             if (sel.Base && data != null)
-                parts = BaseCharacter.Compose(BaseParts(data, sel.Gender, sel.HighDetail), chosen);
+            {
+                var baseParts = BaseParts(data, sel.Gender, sel.HighDetail);
+                if (suit != null) baseParts = baseParts.Where(p => p.Piece is not ("Top" or "Bottom" or "Shoe")).ToList();
+                parts = BaseCharacter.Compose(baseParts, chosen);
+            }
             parts = HeadPaint.Apply(parts, FaceLayersFor(sel, data));
             return use(DefaultName(sel), parts);
         }

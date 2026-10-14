@@ -19,9 +19,12 @@ public sealed class RecipeTable
 
     public IReadOnlyDictionary<uint, List<RecipePair>> Recipes { get; }
 
-    RecipeTable(Dictionary<uint, List<RecipePair>> recipes) => Recipes = recipes;
+    /// <summary>Recettes de combinaisons intégrales (type de pièce 4 : « Goliath_A », mascottes) : elles cachent les autres vêtements.</summary>
+    public IReadOnlySet<uint> FullBody { get; }
 
-    public static RecipeTable Empty { get; } = new([]);
+    RecipeTable(Dictionary<uint, List<RecipePair>> recipes, HashSet<uint> fullBody) => (Recipes, FullBody) = (recipes, fullBody);
+
+    public static RecipeTable Empty { get; } = new([], []);
 
     /// <summary>
     /// Lit les recettes. Une recette : hash de son nom, un en-tête de 4 à 16 octets, puis des paires
@@ -31,6 +34,7 @@ public sealed class RecipeTable
     public static RecipeTable Parse(ReadOnlySpan<byte> data, IReadOnlySet<uint> slots)
     {
         var recipes = new Dictionary<uint, List<RecipePair>>();
+        var fullBody = new HashSet<uint>();
         // En-tête : drapeau, petit entier, type de pièce (2 cheveux, 3 accessoire, 4 visage, 5 haut, 6 bas, 7 chaussures)
         bool IsHeader(ReadOnlySpan<byte> d, int p) => p + 3 <= d.Length && HeaderFlags.Contains(d[p]) && d[p + 1] <= 3 && d[p + 2] is >= 2 and <= 7;
         uint U32(ReadOnlySpan<byte> d, int p) => BinaryPrimitives.ReadUInt32LittleEndian(d[p..]);
@@ -56,10 +60,10 @@ public sealed class RecipeTable
                 q += 8;
             }
             if (pairs.Count == 0) { p++; continue; }
-            recipes.TryAdd(U32(data, p), pairs);
+            if (recipes.TryAdd(U32(data, p), pairs) && data[p + 6] == 4) fullBody.Add(U32(data, p));
             p = q;
         }
-        return new RecipeTable(recipes);
+        return new RecipeTable(recipes, fullBody);
     }
 
     const string ConfigEntry = "assets/android/gameassetbundles/config/clothesrecipesbytes";
