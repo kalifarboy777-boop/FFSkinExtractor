@@ -106,6 +106,7 @@ async function pollStatus() {
       if ((s.state === 'NotConfigured' || s.state === 'Error') && !$('settings').open) openSettings();
       lastState = s.state;
     }
+    handleArrivals(s.arrivals);
   } catch { $('statusText').textContent = 'Serveur injoignable : relance FF Skin Studio.'; }
   setTimeout(pollStatus, state.status?.state === 'Scanning' || state.status?.batch?.running || state.status?.pull?.running ? 500 : 2500);
 }
@@ -163,14 +164,23 @@ async function findDevices() {
       const info = el('div', 'grow');
       info.append(el('div', 'name', `${d.model}${d.emulator ? ' (émulateur)' : ''}`));
       info.append(el('div', 'muted small-text', d.games.length ? d.games.map(g => g.endsWith('max') ? 'Free Fire MAX' : 'Free Fire').join(', ') : "Free Fire introuvable sur cet appareil"));
-      const b = el('button', 'primary', 'Récupérer');
+      const b = el('button', 'ghost', 'Récupérer');
       b.type = 'button';
       b.disabled = !d.games.length;
+      b.title = 'Copie une fois tous les skins que le jeu a déjà téléchargés';
       b.onclick = async () => {
         try { await api('pull', { serial: d.serial }); setTimeout(pollStatus, 300); }
         catch (err) { toast(err.message, true); }
       };
-      row.append(info, b);
+      const w = el('button', 'primary', 'Suivre en direct');
+      w.type = 'button';
+      w.disabled = !d.games.length;
+      w.title = "Chaque skin que le jeu télécharge s'ouvre tout seul ici";
+      w.onclick = async () => {
+        try { await api('watch', { serial: d.serial }); setTimeout(pollStatus, 300); }
+        catch (err) { toast(err.message, true); }
+      };
+      row.append(info, b, w);
       list.append(row);
     }
   } catch (err) { list.innerHTML = ''; toast(err.message, true); }
@@ -182,6 +192,52 @@ $('deviceRefresh').onclick = findDevices;
 $('deviceClose').onclick = () => $('device').close();
 $('pullCancel').onclick = () => api('pull/cancel', {});
 
+// Skins arrivés pendant le suivi en direct : un seul s'ouvre tout seul, plusieurs (bundle numéroté qui range
+// plusieurs tenues) sont proposés dans la fenêtre « Téléphone »
+let arrivalStamp = null;
+function showArrival(item) {
+  if (item.gender !== state.gender) { state.gender = item.gender; state.character = null; }
+  if (item.bundle && bundleByValue(item.bundle)) applyBundle(item.bundle);
+  else {
+    state.bundle = null;
+    state.slots = { ...item.slots };
+    $('fileName').value = '';
+    render();
+    requestModel();
+  }
+}
+function handleArrivals(a) {
+  if (!a) return;
+  if (arrivalStamp === null) { arrivalStamp = a.stamp; renderArrivals(a.items); return; }   // déjà là avant l'ouverture de la page
+  if (a.stamp === arrivalStamp || !a.items?.length) return;
+  arrivalStamp = a.stamp;
+  renderArrivals(a.items);
+  if (a.items.length === 1) {
+    showArrival(a.items[0]);
+    if ($('device').open) $('device').close();
+    toast(`Nouveau skin reçu du jeu : ${a.items[0].name}`);
+  } else {
+    if (!$('device').open) $('device').showModal();
+    toast(`${a.items.length} skins reçus du jeu : choisis le tien dans la liste.`);
+  }
+}
+function renderArrivals(items) {
+  const box = $('arrivals');
+  box.innerHTML = '';
+  box.classList.toggle('hidden', !items?.length);
+  if (!items?.length) return;
+  box.append(el('div', 'muted small-text', 'Reçus du jeu (clique pour afficher) :'));
+  const list = el('div', 'arrival-list');
+  for (const item of items) {
+    const b = el('button', 'ghost arrival');
+    b.type = 'button';
+    b.append(thumb(item.iconUrl, initials(item.name)), el('span', null, `${item.name} · ${item.gender === 'Male' ? 'homme' : 'femme'}`));
+    b.onclick = () => { showArrival(item); $('device').close(); };
+    list.append(b);
+  }
+  box.append(list);
+}
+
 let pullWasRunning = false;
 function renderPull(p) {
   if (!p) return;
@@ -192,7 +248,10 @@ function renderPull(p) {
   box.querySelector('.progress > div').style.width = (p.total ? Math.round(p.done / p.total * 100) : 0) + '%';
   $('pullText').textContent = p.error ? 'Erreur : ' + p.error
     : p.running && p.total ? `${p.done} / ${p.total} fichier(s)…` : (p.message ?? '');
-  if (pullWasRunning && !p.running) {
+  $('pullCancel').textContent = p.watching ? 'Arrêter le suivi' : 'Annuler';
+  $('openDevice').textContent = p.watching ? '● En direct' : 'Téléphone';
+  $('openDevice').classList.toggle('live', !!p.watching);
+  if (pullWasRunning && !p.running && !p.watching) {
     if (p.error) toast(p.error, true);
     else toast(p.copied ? `${p.copied} fichier(s) récupéré(s) : nouvelle analyse en cours.` : (p.message ?? 'Terminé.'));
   }

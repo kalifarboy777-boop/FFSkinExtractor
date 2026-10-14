@@ -49,6 +49,12 @@ clique sur **Récupérer** : seuls les fichiers absents du dossier des données 
 dossiers des émulateurs ; son chemin peut aussi être indiqué dans les réglages. Quand un même bundle est présent
 plusieurs fois, la copie la plus récente est utilisée.
 
+**Suivre en direct** surveille l'appareil toutes les 4 secondes : dès que le jeu télécharge un skin (affiché pour
+la première fois, en l'essayant ou en l'équipant), il est copié, analysé et s'affiche sur le personnage. Quand le
+fichier téléchargé range plusieurs tenues, elles sont proposées dans la fenêtre « Téléphone ». Un skin que le jeu
+avait déjà téléchargé ne peut pas être détecté (le skin équipé n'est écrit dans aucun fichier) : cherche-le par
+son nom ou son ID.
+
 ## FF Skin Studio (interface)
 
 Lance `FFSkinStudio.exe`. Une page s'ouvre dans le navigateur (`http://127.0.0.1:5178`). Au premier lancement,
