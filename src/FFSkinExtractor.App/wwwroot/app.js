@@ -45,7 +45,7 @@ async function api(path, body) {
   });
   if (!res.ok) {
     let msg = res.statusText;
-    try { const j = await res.json(); msg = j.detail || j.title || msg; } catch { try { msg = await res.text(); } catch { } }
+    try { const j = await res.json(); msg = typeof j === 'string' ? j : (j.detail || j.title || msg); } catch { try { msg = await res.text(); } catch { } }
     throw new Error(msg);
   }
   return res;

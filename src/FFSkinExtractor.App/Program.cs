@@ -192,6 +192,12 @@ app.MapPost("/api/pull", async (PullRequest req, CancellationToken ct) =>
     var device = (await DevicePull.ListDevicesAsync(adb, ct)).FirstOrDefault(d => d.Serial == req.Serial);
     if (device == null) return Results.Problem("Appareil déconnecté.");
     if (device.Games.Count == 0) return Results.Problem("Free Fire n'est pas installé sur cet appareil (ou n'a encore rien téléchargé).");
+    // « Récupérer » pendant le suivi en direct : on arrête le suivi d'abord
+    if (pull.Watching)
+    {
+        pull.Cancel();
+        for (int i = 0; i < 50 && pull.Running; i++) await Task.Delay(100, ct);
+    }
     // Nouvelle analyse une fois la copie finie, pour que les skins récupérés apparaissent
     if (!pull.TryStart(adb, device, folder, library.AddArrivals))
         return Results.Conflict("Une récupération est déjà en cours.");
@@ -207,6 +213,7 @@ app.MapPost("/api/watch", async (PullRequest req, CancellationToken ct) =>
     var device = (await DevicePull.ListDevicesAsync(adb, ct)).FirstOrDefault(d => d.Serial == req.Serial);
     if (device == null) return Results.Problem("Appareil déconnecté.");
     if (device.Games.Count == 0) return Results.Problem("Free Fire n'est pas installé sur cet appareil.");
+    if (pull.Watching) return Results.Ok();   // déjà en cours
     if (!pull.TryWatch(adb, device, folder, library.AddArrivals))
         return Results.Conflict("Une récupération est déjà en cours.");
     return Results.Ok();
