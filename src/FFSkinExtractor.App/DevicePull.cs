@@ -27,10 +27,12 @@ public sealed class DevicePull
     public int Copied { get; private set; }
     public string? Message { get; private set; }
     public string? Error { get; private set; }
+    public bool Watching { get; private set; }
+    public string? WatchDevice { get; private set; }
 
     public object Snapshot()
     {
-        lock (_sync) return new { running = Running, total = Total, done = Done, copied = Copied, message = Message, error = Error };
+        lock (_sync) return new { running = Running, watching = Watching, device = WatchDevice, total = Total, done = Done, copied = Copied, message = Message, error = Error };
     }
 
     public void Cancel() => _cts?.Cancel();
@@ -105,7 +107,7 @@ public sealed class DevicePull
     }
 
     /// <summary>Lance la copie en arrière-plan ; <paramref name="done"/> est appelé si des fichiers ont été copiés.</summary>
-    public bool TryStart(string adb, AndroidDevice device, string dataFolder, Action done)
+    public bool TryStart(string adb, AndroidDevice device, string dataFolder, Action<List<string>> done)
     {
         lock (_sync)
         {
@@ -118,8 +120,8 @@ public sealed class DevicePull
         {
             try
             {
-                await PullAsync(adb, device, dataFolder, ct);
-                if (Copied > 0) done();
+                var copied = await PullAsync(adb, device, dataFolder, LocalFiles(dataFolder), null, ct);
+                if (copied.Count > 0) done(copied);
             }
             catch (OperationCanceledException) { Message = $"Annulé : {Copied} fichier(s) copié(s)."; }
             catch (Exception e) { Error = e.Message; }
@@ -128,18 +130,77 @@ public sealed class DevicePull
         return true;
     }
 
-    async Task PullAsync(string adb, AndroidDevice device, string dataFolder, CancellationToken ct)
+    /// <summary>
+    /// Suivi en direct : toutes les quelques secondes, regarde si le jeu a téléchargé de nouveaux bundles
+    /// (un skin affiché pour la première fois) et les copie aussitôt.
+    /// </summary>
+    public bool TryWatch(string adb, AndroidDevice device, string dataFolder, Action<List<string>> arrived)
     {
-        // Fichiers déjà présents (nom avec son suffixe de version + taille) : on ne les recopie pas
-        var local = Directory.EnumerateFiles(dataFolder, "optionalab_*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true })
+        lock (_sync)
+        {
+            if (Running) return false;
+            Running = true; Watching = true; WatchDevice = device.Model; Total = 0; Done = 0; Copied = 0; Error = null;
+            Message = $"Suivi de {device.Model} : équipe ou essaie un skin dans le jeu…";
+            _cts = new CancellationTokenSource();
+        }
+        var ct = _cts.Token;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var local = LocalFiles(dataFolder);
+                // Taille vue au tour précédent : un fichier n'est copié qu'une fois sa taille stable (téléchargement fini)
+                var seen = new Dictionary<string, long>();
+                int failures = 0;
+                while (!ct.IsCancellationRequested)
+                {
+                    try
+                    {
+                        var copied = await PullAsync(adb, device, dataFolder, local, seen, ct);
+                        failures = 0;
+                        if (copied.Count > 0)
+                        {
+                            Message = $"Suivi de {device.Model} : {copied.Count} nouveau(x) fichier(s) reçu(s), chargement…";
+                            arrived(copied);
+                        }
+                        else if (Total == 0) Message = $"Suivi de {device.Model} : équipe ou essaie un skin dans le jeu…";
+                    }
+                    catch (Exception e) when (e is not OperationCanceledException)
+                    {
+                        // Appareil débranché ou en veille : on réessaie, puis on abandonne
+                        if (++failures >= 5) throw;
+                        Message = $"Suivi de {device.Model} : appareil injoignable, nouvel essai…";
+                    }
+                    await Task.Delay(TimeSpan.FromSeconds(4), ct);
+                }
+            }
+            catch (OperationCanceledException) { Message = $"Suivi arrêté : {Copied} fichier(s) reçu(s)."; }
+            catch (Exception e) { Error = e.Message; }
+            finally { lock (_sync) { Running = false; Watching = false; } }
+        });
+        return true;
+    }
+
+    static HashSet<(string, long)> LocalFiles(string dataFolder) =>
+        Directory.EnumerateFiles(dataFolder, "optionalab_*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true })
             .Select(f => (Path.GetFileName(f).ToLowerInvariant(), new FileInfo(f).Length)).ToHashSet();
 
+    /// <summary>
+    /// Copie les bundles du jeu absents de <paramref name="local"/> (nom avec son suffixe de version + taille)
+    /// et renvoie les chemins des fichiers copiés. Avec <paramref name="seen"/>, ne prend que les fichiers
+    /// dont la taille n'a pas bougé depuis le tour précédent.
+    /// </summary>
+    async Task<List<string>> PullAsync(string adb, AndroidDevice device, string dataFolder, HashSet<(string, long)> local,
+        Dictionary<string, long>? seen, CancellationToken ct)
+    {
         var wanted = new List<(string Remote, string Relative, long Size)>();
         foreach (var pkg in device.Games)
         {
             string root = $"/sdcard/Android/data/{pkg}/files/contentcache";
             var (code, listing) = await Adb(adb, ["-s", device.Serial, "shell",
                 $"find {root} -type f -name 'optionalab_*' -size +0 -exec stat -c '%s|%n' {{}} +"], TimeSpan.FromMinutes(2), ct);
+            if (code != 0 && listing.Contains("device") && (listing.Contains("not found") || listing.Contains("offline")))
+                throw new IOException($"{device.Model} n'est plus connecté.");
             if (listing.Contains("Permission denied") && !listing.Contains('|'))
                 throw new UnauthorizedAccessException("Android refuse l'accès au dossier du jeu. Autorise le débogage USB sur l'appareil, puis réessaie.");
             if (!listing.Contains('|'))
@@ -160,11 +221,23 @@ public sealed class DevicePull
                 if (!GameBundle.IsOutfitBundle(relative)) continue;
                 string fileName = Path.GetFileName(relative).ToLowerInvariant();
                 if (size >= 0 ? local.Contains((fileName, size)) : local.Any(l => l.Item1 == fileName)) continue;
+                if (seen != null)
+                {
+                    bool stable = seen.TryGetValue(remote, out long before) && before == size;
+                    seen[remote] = size;
+                    if (!stable) continue;
+                }
                 wanted.Add((remote, Path.Combine(pkg, "files", "contentcache", relative.Replace('/', Path.DirectorySeparatorChar)), size));
             }
         }
+        var copied = new List<string>();
         Total = wanted.Count;
-        if (wanted.Count == 0) { Message = "Aucun nouveau skin : tout est déjà dans le dossier des données."; return; }
+        if (wanted.Count == 0)
+        {
+            if (seen == null) Message = "Aucun nouveau skin : tout est déjà dans le dossier des données.";
+            return copied;
+        }
+        Done = 0;
 
         string target = Path.Combine(dataFolder, "Appareil - " + SafeName(device.Model));
         Message = $"Copie de {wanted.Count} fichier(s) depuis {device.Model}…";
@@ -180,7 +253,12 @@ public sealed class DevicePull
             if (code == 0 && File.Exists(part) && (f.Size < 0 ? new FileInfo(part).Length > 0 : new FileInfo(part).Length == f.Size))
             {
                 File.Move(part, dest, true);
-                lock (_sync) Copied++;
+                lock (_sync)
+                {
+                    Copied++;
+                    copied.Add(dest);
+                    local.Add((Path.GetFileName(dest).ToLowerInvariant(), new FileInfo(dest).Length));
+                }
             }
             else
             {
@@ -189,7 +267,9 @@ public sealed class DevicePull
             }
             lock (_sync) Done++;
         });
-        Message = $"{Copied} fichier(s) copié(s) dans « {target} »" + (failed > 0 ? $", {failed} échec(s)." : ".");
+        Message = $"{copied.Count} fichier(s) copié(s) dans « {target} »" + (failed > 0 ? $", {failed} échec(s)." : ".");
+        Total = 0;
+        return copied;
     }
 
     static async Task<(int Code, string Output)> Adb(string adb, string[] args, TimeSpan timeout, CancellationToken ct)

@@ -52,6 +52,7 @@ app.MapGet("/api/status", () => new
     suggestions = AppSettings.Suggestions().ToList(),
     batch = batch.Snapshot(),
     pull = pull.Snapshot(),
+    arrivals = new { stamp = library.ArrivalStamp, items = library.Arrivals },
     version = assembly.GetName().Version?.ToString(3),
 });
 
@@ -192,7 +193,21 @@ app.MapPost("/api/pull", async (PullRequest req, CancellationToken ct) =>
     if (device == null) return Results.Problem("Appareil déconnecté.");
     if (device.Games.Count == 0) return Results.Problem("Free Fire n'est pas installé sur cet appareil (ou n'a encore rien téléchargé).");
     // Nouvelle analyse une fois la copie finie, pour que les skins récupérés apparaissent
-    if (!pull.TryStart(adb, device, folder, () => library.StartScan(library.Settings)))
+    if (!pull.TryStart(adb, device, folder, library.AddArrivals))
+        return Results.Conflict("Une récupération est déjà en cours.");
+    return Results.Ok();
+});
+
+// Suivi en direct : chaque skin que le jeu télécharge (équipé ou essayé pour la première fois) arrive tout seul
+app.MapPost("/api/watch", async (PullRequest req, CancellationToken ct) =>
+{
+    if (library.Settings.DataFolder is not { } folder || !Directory.Exists(folder))
+        return Results.Problem("Choisis d'abord le dossier des données dans les réglages.");
+    if (DevicePull.FindAdb(library.Settings.AdbPath) is not { } adb) return Results.Problem("ADB introuvable.");
+    var device = (await DevicePull.ListDevicesAsync(adb, ct)).FirstOrDefault(d => d.Serial == req.Serial);
+    if (device == null) return Results.Problem("Appareil déconnecté.");
+    if (device.Games.Count == 0) return Results.Problem("Free Fire n'est pas installé sur cet appareil.");
+    if (!pull.TryWatch(adb, device, folder, library.AddArrivals))
         return Results.Conflict("Une récupération est déjà en cours.");
     return Results.Ok();
 });

@@ -52,6 +52,9 @@ public sealed record SlotItem(string Value, long? Id, string Name, string Rarity
 public sealed record BundleEntry(string Value, long? Id, string Name, string Rarity, string? IconUrl, string? Gender,
     bool Available, Dictionary<string, string> Slots, string? Outfit);
 
+/// <summary>Skin arrivé de l'appareil : le bundle à choisir, ou à défaut les objets à mettre par emplacement.</summary>
+public sealed record Arrival(string Name, string Gender, string? Bundle, Dictionary<string, string> Slots, string? IconUrl);
+
 /// <summary>Ce que l'interface demande : un personnage, et des objets par emplacement (Cheveux, Masque, Haut…).</summary>
 public sealed record Look(string Gender, bool HighDetail, string? Character, Dictionary<string, string>? Slots,
     bool Base = true, bool Skinned = true, bool Pbr = true);
@@ -127,6 +130,24 @@ public sealed partial class Library : IDisposable
     {
         Settings = settings;
         if (!string.IsNullOrEmpty(settings.DataFolder)) StartScan(settings);
+    }
+
+    /// <summary>Skins arrivés de l'appareil lors du dernier suivi en direct ; <see cref="ArrivalStamp"/> change à chaque arrivée.</summary>
+    public IReadOnlyList<Arrival> Arrivals { get; private set; } = [];
+    public int ArrivalStamp { get; private set; }
+    readonly HashSet<string> _pendingArrivals = new(StringComparer.OrdinalIgnoreCase);
+    bool _rescanQueued;
+
+    /// <summary>Relance l'analyse après l'arrivée de nouveaux bundles, puis signale les skins qu'ils contiennent.</summary>
+    public void AddArrivals(IEnumerable<string> bundlePaths)
+    {
+        lock (_sync)
+        {
+            _pendingArrivals.UnionWith(bundlePaths);
+            // Analyse déjà en cours : elle n'a peut-être pas vu ces fichiers, on en relance une à la fin
+            if (State == LibraryState.Scanning) { _rescanQueued = true; return; }
+        }
+        StartScan(Settings);
     }
 
     public void StartScan(AppSettings settings)
@@ -245,15 +266,49 @@ public sealed partial class Library : IDisposable
                 BuildFacePaintViews();
             }
             Progress = 1;
-            State = LibraryState.Ready;
             Message = $"{Characters.Count} personnages, {Bundles.Count(b => b.Available)} bundles, {SlotItems.Count} objets"
                 + (data == null ? " · paquet du jeu absent : pas de corps de base" : "");
+            bool again;
+            lock (_sync)
+            {
+                again = _rescanQueued;
+                _rescanQueued = false;
+                if (!again && _pendingArrivals.Count > 0)
+                {
+                    var found = FindArrivals(_pendingArrivals);
+                    _pendingArrivals.Clear();
+                    if (found.Count > 0) { Arrivals = found; ArrivalStamp++; }
+                }
+                State = again ? LibraryState.Scanning : LibraryState.Ready;
+            }
+            if (again) _ = Task.Run(() => Scan(settings));
         }
         catch (Exception e)
         {
+            lock (_sync) { _rescanQueued = false; _pendingArrivals.Clear(); }
             State = LibraryState.Error;
             Message = e.Message;
         }
+    }
+
+    // Skins contenus dans les bundles arrivés : le bundle de la tenue s'il existe, sinon ses objets un par un
+    List<Arrival> FindArrivals(IReadOnlySet<string> paths)
+    {
+        var result = new List<Arrival>();
+        var keys = Outfits.Where(o => paths.Contains(o.BundlePath) && !RecipeOnly(o)).Select(o => (o.Key, o.Gender, o.Name, o.DisplayName)).Distinct();
+        foreach (var (key, gender, name, display) in keys)
+        {
+            if (Bundles.FirstOrDefault(b => b.Value == "b:" + key) is { } b)
+            {
+                result.Add(new Arrival(b.Name, gender, b.Value, b.Slots, b.IconUrl));
+                continue;
+            }
+            var slots = SlotItems.Where(i => i.Gender == gender && i.Outfit == name)
+                .GroupBy(i => i.Slot).ToDictionary(g => g.Key, g => g.First().Value);
+            if (slots.Count > 0)
+                result.Add(new Arrival(display, gender, null, slots, SlotItems.FirstOrDefault(i => i.Gender == gender && i.Outfit == name && i.IconUrl != null)?.IconUrl));
+        }
+        return result;
     }
 
     // Sacs à dos, parachutes… rangés avec les tenues dans les bundles numérotés : ce ne sont pas des vêtements
