@@ -169,7 +169,7 @@ public sealed class GameData : IDisposable
                     foreach (var info in f.AssetInfos)
                     {
                         var t = (AssetClassID)info.TypeId;
-                        if (t is not (AssetClassID.MonoBehaviour or AssetClassID.Texture2D or AssetClassID.Avatar)) continue;
+                        if (t is not (AssetClassID.MonoBehaviour or AssetClassID.Texture2D or AssetClassID.Avatar or AssetClassID.TextAsset)) continue;
                         var o = Describe(file, f, info);
                         if (o.Name.Length == 0) continue;
                         if (!index.TryGetValue(o.Name, out var list)) index[o.Name] = list = [];
@@ -200,7 +200,7 @@ public sealed class GameData : IDisposable
         var t = (AssetClassID)info.TypeId;
         string name = "";
         int at = t == AssetClassID.MonoBehaviour ? 28 : 0;
-        if (t is AssetClassID.MonoBehaviour or AssetClassID.Texture2D or AssetClassID.Avatar or AssetClassID.Material)
+        if (t is AssetClassID.MonoBehaviour or AssetClassID.Texture2D or AssetClassID.Avatar or AssetClassID.Material or AssetClassID.TextAsset)
         {
             lock (f)
             {
@@ -214,6 +214,16 @@ public sealed class GameData : IDisposable
             }
         }
         return new DataObject(file, info.PathId, t, name);
+    }
+
+    /// <summary>Contenu d'un TextAsset (tables de configuration du jeu, comme « Clothes »).</summary>
+    public byte[]? TextAsset(string name)
+    {
+        if (Find(name, AssetClassID.TextAsset) is not { } o) return null;
+        var raw = Raw(o);
+        int p = (4 + BinaryPrimitives.ReadInt32LittleEndian(raw) + 3) & ~3;
+        int len = BinaryPrimitives.ReadInt32LittleEndian(raw.AsSpan(p));
+        return raw.AsSpan(p + 4, len).ToArray();
     }
 
     readonly Dictionary<DataObject, DecodedTexture?> _textures = [];

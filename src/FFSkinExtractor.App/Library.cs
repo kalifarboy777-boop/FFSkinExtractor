@@ -29,7 +29,15 @@ public sealed record OutfitEntry(string Id, string Gender, string Name, string D
     /// </summary>
     internal Dictionary<string, string> PieceSources { get; init; } = [];
     internal string SourceOf(string piece) => PieceSources.GetValueOrDefault(piece) ?? Id;
+    /// <summary>Tenue tirée d'une recette du jeu : slots d'autres tenues habillés d'autres overlays.</summary>
+    internal List<RecipePart>? Recipe { get; init; }
 }
+
+/// <summary>Morceau d'une recette : un slot (et son bundle) et l'overlay qui l'habille, s'il est connu.</summary>
+sealed record RecipePart(string SlotName, string SlotBundle, bool SlotHd, string? Overlay, string? OverlayBundle);
+
+/// <summary>Un slot lu dans les bundles, retrouvé par le hash de son nom dans les recettes.</summary>
+sealed record SlotRef(string SlotName, string Bundle, bool Hd, string Gender, string Key, string Piece);
 
 /// <summary>Un personnage du jeu, choisi tel quel (visage, coiffure et tenue d'origine).</summary>
 public sealed record CharacterEntry(string Key, string Gender, string Name, string Internal, ItemRef? Item);
@@ -92,6 +100,8 @@ public sealed class Library : IDisposable
     readonly Dictionary<string, TextureSet?> _externalOverlays = [];
     readonly Dictionary<(HeadLayerKind, string, string), List<HeadLayer>> _layerCache = [];
     Dictionary<long, List<(string Gender, string Name)>> _facePaintIndex = [];
+    // ID d'objet → tenue et pièce, d'après la table « Clothes » et les recettes du jeu
+    Dictionary<long, List<(string Key, string Piece)>> _tableLinks = [];
     Task<GameData?>? _gameData;
 
     public AppSettings Settings { get; private set; }
@@ -149,6 +159,8 @@ public sealed class Library : IDisposable
             // Paquet du jeu (.xapk/.apk) : corps de base, visage, peau
             GamePackage = settings.GamePackage is { Length: > 0 } p && File.Exists(p) ? p : FindPackage(files);
             _gameData = GamePackage == null ? Task.FromResult<GameData?>(null) : Task.Run(() => OpenGameData(GamePackage));
+            string? package = GamePackage;
+            var recipeBytes = Task.Run(() => RecipeTable.LoadBytes(package, files));
 
             Message = "Chargement des ID d'objets (ItemID2)…";
             try { Catalog = await ItemCatalog.LoadOrDownloadAsync(Path.Combine(AppSettings.Folder, "itemData.json")); }
@@ -182,6 +194,29 @@ public sealed class Library : IDisposable
                 layers.AddRange(r.Layers.Select(l => new HeadLayerRef(l.Gender, l.Kind, l.Name, bundles[i], l.Overlay, l.Atlas)));
                 foreach (var (key, overlay) in r.Overlays) overlayIndex.TryAdd(key, (bundles[i], overlay));
             }
+            // Recettes du jeu : objets qui reprennent le maillage d'une tenue avec les textures d'une autre
+            Message = "Lecture des recettes du jeu…";
+            var data = await _gameData;
+            var slotRefs = SlotRefs(bundles, results);
+            var overlayByHash = new Dictionary<uint, (string Bundle, string Overlay)>();
+            for (int i = 0; i < bundles.Count; i++)
+                foreach (var (_, overlay) in results[i]?.Overlays ?? [])
+                    overlayByHash.TryAdd(Crc32.Hash(overlay), (bundles[i], overlay));
+            var recipes = await recipeBytes is { } rb ? RecipeTable.Parse(rb, slotRefs.Keys.ToHashSet()) : RecipeTable.Empty;
+            var byRecipe = new Dictionary<uint, (string Key, string Piece)>();
+            entries.AddRange(RecipeEntries(recipes, slotRefs, overlayByHash, byRecipe));
+            var tableLinks = new Dictionary<long, List<(string Key, string Piece)>>();
+            byte[]? clothes = null;
+            try { clothes = data?.TextAsset("Clothes"); } catch (Exception) { /* table illisible : rapprochement par les noms */ }
+            foreach (var (id, names) in clothes == null ? [] : ClothesTable.Parse(clothes))
+                foreach (var name in names)
+                    if (name.Length > 0 && byRecipe.TryGetValue(Crc32.Hash(name), out var link))
+                    {
+                        if (!tableLinks.TryGetValue(id, out var list)) tableLinks[id] = list = [];
+                        if (!list.Contains(link)) list.Add(link);
+                    }
+            _tableLinks = tableLinks;
+
             _cabToBundle = cabs;
             lock (_layerCache) _layerCache.Clear();
             _headLayers = layers;
@@ -192,8 +227,6 @@ public sealed class Library : IDisposable
             BuildCatalogViews();
             BuildFacePaintViews();
 
-            Message = "Lecture du corps de base…";
-            var data = await _gameData;
             if (data != null)
             {
                 // Maquillages et racines de cheveux rangés dans l'APK (personnages de départ)
@@ -270,6 +303,73 @@ public sealed class Library : IDisposable
                 IsCharacter = isCharacter, PieceItems = items, PieceSources = sources,
             };
         }).ToList();
+
+    const string RecipeLabel = "recette";
+    // Rapprochement par le nom sans mot en trop dans l'icône : « warringstates_purple » ne prend pas le coloris de base
+    const int MinNameScore = 10;
+
+    // Slots de toutes les tenues lues, par hash de leur nom. Les recettes « _PBR » désignent le slot « _N »
+    // (le même maillage), que la lecture des tenues garde à leur place.
+    static Dictionary<uint, SlotRef> SlotRefs(List<string> bundles, ScanCache.BundleScan?[] results)
+    {
+        var refs = new Dictionary<uint, SlotRef>();
+        for (int i = 0; i < bundles.Count; i++)
+            foreach (var o in results[i]?.Outfits ?? [])
+                foreach (var p in o.Parts)
+                {
+                    var r = new SlotRef(p.SlotName, bundles[i], o.HighDetail, o.Gender, o.Gender + ":" + o.Name, p.Piece);
+                    refs.TryAdd(Crc32.Hash(p.SlotName), r);
+                    if (Regex.Match(p.SlotName, @"_N(_\d+)?$") is { Success: true } m)
+                        refs.TryAdd(Crc32.Hash(p.SlotName[..m.Index] + "_PBR" + m.Groups[1].Value), r);
+                }
+        return refs;
+    }
+
+    static readonly HashSet<string> RecipeNameNoise = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "male", "female", "mle", "shared", "overlay", "n", "pbr", "slot", "lobby", "ingame",
+        "top", "bottom", "shoe", "shoes", "feet", "hair", "head", "leg", "accessory", "mask", "face", "hat",
+        "clothes", "hand", "hands", "headadditive",
+    };
+
+    static readonly string[] RecipePieces = ["Top", "Bottom", "Shoe", "Head", "Hair", "Accessory"];
+
+    /// <summary>
+    /// Une tenue par recette dont l'overlay est connu, nommée d'après cet overlay
+    /// (« Male_Top_Cos_Goldenleo_A_Overlay_N » → « Cos_Goldenleo_A »). <paramref name="byRecipe"/> reçoit,
+    /// pour chaque recette, la tenue et la pièce qui la portent (la tenue du slot si la recette n'a pas d'overlay à elle).
+    /// </summary>
+    static List<OutfitEntry> RecipeEntries(RecipeTable table, Dictionary<uint, SlotRef> slots,
+        Dictionary<uint, (string Bundle, string Overlay)> overlays, Dictionary<uint, (string Key, string Piece)> byRecipe)
+    {
+        var result = new List<OutfitEntry>();
+        foreach (var (hash, pairs) in table.Recipes)
+        {
+            var first = slots[pairs[0].Slot];
+            if (!RecipePieces.Contains(first.Piece) || IsAccessoryOnly(first.SlotName)) continue;
+            string? named = pairs.Select(p => overlays.TryGetValue(p.Overlay, out var o) ? o.Overlay : null).FirstOrDefault(o => o != null);
+            if (named == null)
+            {
+                byRecipe[hash] = (first.Key, first.Piece);
+                continue;
+            }
+            string name = string.Join('_', named.Split('_', StringSplitOptions.RemoveEmptyEntries).Where(w => !RecipeNameNoise.Contains(w)));
+            if (name.Length == 0 || IsAccessoryOnly(name)) continue;
+            var parts = pairs.Select(p =>
+            {
+                var s = slots[p.Slot];
+                return overlays.TryGetValue(p.Overlay, out var o)
+                    ? new RecipePart(s.SlotName, s.Bundle, s.Hd, o.Overlay, o.Bundle)
+                    : new RecipePart(s.SlotName, s.Bundle, s.Hd, null, null);
+            }).ToList();
+            var pieces = new List<PieceEntry> { new(first.Piece, parts.Select(p => p.SlotName).Distinct().ToList(), null) };
+            var entry = new OutfitEntry($"{(first.Hd ? "hd" : "lo")}:{RecipeLabel}:{first.Gender}:{name}", first.Gender, name,
+                DisplayName(name, pieces, null), first.Hd, RecipeLabel, pieces, null) { Recipe = parts };
+            result.Add(entry);
+            byRecipe[hash] = (entry.Key, first.Piece);
+        }
+        return result;
+    }
 
     /// <summary>Inventaire d'un bundle : tenues (sans maillages ni textures), calques du visage et overlays.</summary>
     static ScanCache.BundleScan? ReadBundle(string path)
@@ -348,8 +448,20 @@ public sealed class Library : IDisposable
         var index = new Dictionary<long, List<(string Key, string Piece)>>();
         var bundles = new List<BundleEntry>();
         var usedBundles = new HashSet<long>();
+        void Link(GameItem item, string key, string piece, string slot)
+        {
+            string gender = key[..key.IndexOf(':')], name = key[(key.IndexOf(':') + 1)..];
+            slotItems.Add(new SlotItem(item.Id.ToString(), item.Id, item.Name, item.Rarity, item.IconUrl, slot, gender, name));
+            if (!index.TryGetValue(item.Id, out var list)) index[item.Id] = list = [];
+            if (!list.Contains((key, piece))) list.Add((key, piece));
+        }
+        bool InTable(long id, string gender) =>
+            _tableLinks.TryGetValue(id, out var links) && links.Any(l => l.Key.StartsWith(gender + ":"));
+
         foreach (var o in unique)
         {
+            // Tenues tirées des recettes : elles ne servent qu'à porter des ID d'objets (voir plus bas)
+            if (RecipeOnly(o)) continue;
             var slots = new Dictionary<string, string>();
             foreach (var p in o.Pieces)
             {
@@ -363,6 +475,8 @@ public sealed class Library : IDisposable
                 }
                 foreach (var item in ids)
                 {
+                    // Déjà relié par la table du jeu (plus sûre que le nom)
+                    if (InTable(item.Id, o.Gender)) { slots.TryAdd(slot, item.Id.ToString()); continue; }
                     slotItems.Add(new SlotItem(item.Id.ToString(), item.Id, item.Name, item.Rarity, item.IconUrl, slot, o.Gender, o.Name));
                     if (!index.TryGetValue(item.Id, out var list)) index[item.Id] = list = [];
                     list.Add((o.Key, p.Piece));
@@ -377,10 +491,41 @@ public sealed class Library : IDisposable
                 bi?.IconUrl ?? o.Pieces.Select(p => p.Item).FirstOrDefault(i => i != null)?.IconUrl,
                 o.Gender, true, slots, o.Name));
         }
-        // Bundles de la boutique dont les fichiers ne sont pas (encore) téléchargés par le jeu
+        if (Catalog != null)
+        {
+            // Objets reliés exactement par la table « Clothes » du jeu et ses recettes
+            var byKey = unique.ToDictionary(o => o.Key);
+            foreach (var (id, links) in _tableLinks)
+                if (Catalog.Get(id) is { } item)
+                    foreach (var (key, piece) in links)
+                        if (byKey.TryGetValue(key, out var o) && o.PieceSources.ContainsKey(piece) && SlotOf(piece, o.IsCharacter) is { } slot)
+                            Link(item, key, piece, slot);
+            // Puis par le nom : chaque vêtement encore sans modèle prend la pièce dont le nom ressemble le plus à son icône
+            // (coloris « hunter_A » d'une recette, ou tenue dont une autre icône avait le meilleur score)
+            foreach (var gender in new[] { "Male", "Female" })
+            {
+                var sources = unique.Where(o => o.Gender == gender)
+                    .SelectMany(o => o.Pieces.Where(p => SlotOf(p.Piece, o.IsCharacter) != null).Select(p => (Outfit: o, p.Piece))).ToList();
+                var best = Catalog.BestSources(gender, sources.Select(s => (s.Outfit.Name, s.Piece)).ToList(),
+                    i => i.Type == "CLOTHES" && !(index.TryGetValue(i.Id, out var l) && l.Any(t => t.Key.StartsWith(gender + ":"))), MinNameScore);
+                foreach (var (id, i) in best)
+                    Link(Catalog.Get(id)!, sources[i].Outfit.Key, sources[i].Piece, SlotOf(sources[i].Piece, false)!);
+            }
+        }
+
+        var slotsById = slotItems.Where(i => i.Id != null).GroupBy(i => i.Id!.Value).ToDictionary(g => g.Key, g => g.ToList());
         if (Catalog != null)
             foreach (var b in Catalog.Bundles.Where(b => !usedBundles.Contains(b.Id)))
-                bundles.Add(new BundleEntry("i:" + b.Id, b.Id, b.Name, b.Rarity, b.IconUrl, b.Gender, false, [], null));
+            {
+                // Bundle sans tenue à son nom : on le compose des vêtements dont l'icône reprend la sienne
+                var best = Catalog.BundleContents(b).SelectMany(i => slotsById.GetValueOrDefault(i.Id) ?? [])
+                    .GroupBy(i => i.Gender).Select(g => (Gender: g.Key, Slots: g.GroupBy(i => i.Slot).ToDictionary(s => s.Key, s => s.Min(i => i.Id!.Value).ToString())))
+                    .OrderByDescending(g => g.Slots.Count).FirstOrDefault();
+                if (best.Slots?.Count >= 2)
+                    bundles.Add(new BundleEntry("i:" + b.Id, b.Id, b.Name, b.Rarity, b.IconUrl, best.Gender, true, best.Slots, null));
+                // Bundles dont les fichiers ne sont pas (encore) téléchargés par le jeu
+                else bundles.Add(new BundleEntry("i:" + b.Id, b.Id, b.Name, b.Rarity, b.IconUrl, b.Gender, false, [], null));
+            }
 
         _itemIndex = index;
         SlotItems = slotItems.DistinctBy(i => (i.Value, i.Gender)).ToList();
@@ -388,6 +533,8 @@ public sealed class Library : IDisposable
     }
 
     Dictionary<long, List<(string Key, string Piece)>> _itemIndex = [];
+
+    bool RecipeOnly(OutfitEntry o) => o.PieceSources.Values.All(id => _entryById.GetValueOrDefault(id)?.Recipe != null);
 
     static readonly Dictionary<string, string[]> BrowseTypes = new()
     {
@@ -701,15 +848,40 @@ public sealed class Library : IDisposable
     /// <summary>Tenue complète (maillages, textures à la demande) ; garde ouverts les derniers bundles utilisés.</summary>
     Outfit LoadOutfit(OutfitEntry entry, SkinTextures? skin)
     {
-        string key = entry.BundlePath + "|" + entry.HighDetail;
+        if (entry.Recipe != null) return LoadRecipe(entry, skin);
+        return OpenOutfits(entry.BundlePath, entry.HighDetail, skin).FirstOrDefault(o => o.Gender == entry.Gender && o.Name == entry.Name)
+            ?? throw new KeyNotFoundException($"{entry.Name} absent de {entry.Bundle}");
+    }
+
+    // Tenue d'une recette : chaque slot est pris dans son bundle, puis habillé de l'overlay de la recette
+    Outfit LoadRecipe(OutfitEntry entry, SkinTextures? skin)
+    {
+        string piece = entry.Pieces[0].Piece;
+        var parts = new List<OutfitPart>();
+        foreach (var rp in entry.Recipe!)
+        {
+            var part = OpenOutfits(rp.SlotBundle, rp.SlotHd, skin).SelectMany(o => o.Parts).FirstOrDefault(p => p.SlotName == rp.SlotName);
+            if (part == null) continue;
+            var own = part.TextureSource;
+            var textures = rp.Overlay == null || part.IsSkin ? own
+                : new Lazy<TextureSet>(() => LoadOverlay(rp.OverlayBundle!, rp.Overlay) is { BaseColor: not null } set ? set : own.Value);
+            parts.Add(part with { Piece = piece, TextureSource = textures });
+        }
+        if (parts.Count == 0) throw new KeyNotFoundException($"{entry.Name} : slots de la recette introuvables");
+        return new Outfit(entry.Name, entry.Gender, parts);
+    }
+
+    List<Outfit> OpenOutfits(string path, bool highDetail, SkinTextures? skin)
+    {
+        string key = path + "|" + highDetail;
         var node = _open.First;
         while (node != null && node.Value.Key != key) node = node.Next;
         if (node == null)
         {
-            var bundle = new GameBundle(entry.BundlePath);
+            var bundle = new GameBundle(path);
             var outfits = OutfitReader.Read(bundle, new OutfitReadOptions
             {
-                HighDetail = entry.HighDetail,
+                HighDetail = highDetail,
                 Skin = skin,
                 External = ExternalTexture,
                 ExternalOverlay = ExternalOverlay,
@@ -726,8 +898,7 @@ public sealed class Library : IDisposable
             _open.Remove(node);
             _open.AddFirst(node);
         }
-        return node.Value.Outfits.FirstOrDefault(o => o.Gender == entry.Gender && o.Name == entry.Name)
-            ?? throw new KeyNotFoundException($"{entry.Name} absent de {entry.Bundle}");
+        return node.Value.Outfits;
     }
 
     // Overlay d'un autre bundle (ex. coloris dont les textures sont rangées ailleurs)
@@ -736,27 +907,33 @@ public sealed class Library : IDisposable
         foreach (var key in keys)
         {
             if (!_overlayIndex.TryGetValue(key, out var at)) continue;
-            lock (_externalOverlays)
-                if (_externalOverlays.TryGetValue(at.Overlay, out var cached)) return cached;
-            TextureSet? set = null;
-            try
-            {
-                using var bundle = new GameBundle(at.Bundle);
-                var o = bundle.UmaObjects().FirstOrDefault(x => x.Name == at.Overlay);
-                if (o != null)
-                {
-                    var refs = FFSkinExtractor.Core.Uma.UmaAssets.OverlayTextures(o.Raw, p => p.FileId != 0
-                        || bundle.GetInfo(p.PathId)?.TypeId == (int)AssetsTools.NET.Extra.AssetClassID.Texture2D);
-                    set = TextureSet.FromOverlay(refs.Select(p => p.FileId != 0
-                        ? (bundle.ExternalName(p.FileId) is { } cab ? ExternalTexture(cab, p.PathId) : null)
-                        : bundle.GetInfo(p.PathId) is { } info ? TextureDecoder.Decode(bundle, info) : null).ToList());
-                }
-            }
-            catch (Exception) { set = null; }
-            lock (_externalOverlays) _externalOverlays[at.Overlay] = set;
-            if (set?.BaseColor != null) return set;
+            if (LoadOverlay(at.Bundle, at.Overlay) is { BaseColor: not null } set) return set;
         }
         return null;
+    }
+
+    // Textures d'un overlay désigné par son nom, gardées en mémoire
+    TextureSet? LoadOverlay(string path, string overlay)
+    {
+        lock (_externalOverlays)
+            if (_externalOverlays.TryGetValue(overlay, out var cached)) return cached;
+        TextureSet? set = null;
+        try
+        {
+            using var bundle = new GameBundle(path);
+            var o = bundle.UmaObjects().FirstOrDefault(x => x.Name == overlay);
+            if (o != null)
+            {
+                var refs = FFSkinExtractor.Core.Uma.UmaAssets.OverlayTextures(o.Raw, p => p.FileId != 0
+                    || bundle.GetInfo(p.PathId)?.TypeId == (int)AssetsTools.NET.Extra.AssetClassID.Texture2D);
+                set = TextureSet.FromOverlay(refs.Select(p => p.FileId != 0
+                    ? (bundle.ExternalName(p.FileId) is { } cab ? ExternalTexture(cab, p.PathId) : null)
+                    : bundle.GetInfo(p.PathId) is { } info ? TextureDecoder.Decode(bundle, info) : null).ToList());
+            }
+        }
+        catch (Exception) { set = null; }
+        lock (_externalOverlays) _externalOverlays[overlay] = set;
+        return set;
     }
 
     // Texture rangée dans un autre bundle, désigné par son nom CAB

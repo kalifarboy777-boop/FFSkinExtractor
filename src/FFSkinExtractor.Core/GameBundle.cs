@@ -27,10 +27,12 @@ public sealed partial class GameBundle : IDisposable
 
     public string Path { get; }
 
-    public GameBundle(string path)
+    public GameBundle(string path) : this(File.OpenRead(path), path) { }
+
+    /// <summary>Ouvre un bundle déjà en mémoire (par exemple rangé dans un APK).</summary>
+    public GameBundle(Stream stream, string path)
     {
         Path = path;
-        Stream stream = File.OpenRead(path);
         if (IsGzip(stream))
         {
             var mem = new MemoryStream();
@@ -116,6 +118,18 @@ public sealed partial class GameBundle : IDisposable
         if (fileId < 1 || fileId > ext.Count) return null;
         var path = ext[fileId - 1].PathName;
         return path[(path.LastIndexOf('/') + 1)..];
+    }
+
+    /// <summary>TextAssets du bundle : nom et contenu (fichiers de configuration du jeu).</summary>
+    public IEnumerable<(string Name, byte[] Data)> TextAssets()
+    {
+        foreach (var info in _file.file.GetAssetsOfType(AssetClassID.TextAsset))
+        {
+            var r = new AssetsFileReader(new MemoryStream(ReadRaw(info)));
+            string name = r.ReadCountStringInt32();
+            r.Align();
+            yield return (name, r.ReadBytes(r.ReadInt32()));
+        }
     }
 
     public IEnumerable<AssetFileInfo> Textures() => _file.file.GetAssetsOfType(AssetClassID.Texture2D);

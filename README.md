@@ -22,7 +22,9 @@ un format compressé propre au jeu, qu'AssetStudio ne sait pas lire. Ce projet d
   transparence (lunettes, voiles) et découpe (cheveux).
 - **Coloris** : les variantes d'une même tenue (ex. Cobra rouge, bleu, violet, jaune) apparaissent séparément.
 - **Deux qualités** : modèles du lobby (HD) ou modèles utilisés en partie.
-- **Liaison aux ID** d'après la base [ItemID2](https://github.com/0xme/ItemID2).
+- **Liaison aux ID** d'après la base [ItemID2](https://github.com/0xme/ItemID2), complétée par les recettes du jeu :
+  un objet sans maillage à lui (T-shirt camouflage, coloris « _A ») est assemblé comme dans le jeu, avec le maillage
+  d'une tenue et les textures d'une autre.
 
 ## Récupérer les données du jeu
 
@@ -33,8 +35,9 @@ Mets dans un même dossier (par exemple `Documents\FFdata`) :
    téléchargement complet des ressources du jeu, les bundles numérotés (`optionalab_123`) contiennent la plupart
    des tenues de la boutique : la première analyse lit plusieurs centaines de bundles (en parallèle), les suivantes
    reprennent l'inventaire gardé dans `%APPDATA%\FFSkinStudio\scan-cache.json`.
-2. Le `.xapk` du jeu (même version que les données). Il fournit le corps, le visage et la peau ; sans lui les tenues
-   s'exportent seules, avec une couleur de peau unie.
+2. Le `.xapk` du jeu (même version que les données). Il fournit le corps, le visage et la peau, ainsi que les
+   recettes des vêtements ; sans lui les tenues s'exportent seules, avec une couleur de peau unie, et les objets
+   faits d'un maillage partagé n'ont pas de modèle.
 
 ## FF Skin Studio (interface)
 
@@ -91,7 +94,8 @@ dotnet publish src/FFSkinExtractor.Cli -c Release -r win-x64 --self-contained -p
 
 - Seuls les objets téléchargés par le jeu ont un modèle 3D. Pour en avoir plus, ouvre-les dans la boutique ou le
   coffre-fort, ou télécharge toutes les ressources dans les paramètres du jeu, puis recopie le dossier et relance l'analyse.
-- Les ID sont trouvés par le nom : une quinzaine de tenues n'en ont pas, quelques correspondances faibles sont écartées.
+- Hors des hauts (table « Clothes » du jeu), les ID sont trouvés par le nom : un objet dont l'icône a un mot de plus
+  que toutes les tenues (souvent un coloris absent des fichiers) reste sans modèle plutôt que d'en prendre un faux.
 - Les animations du jeu et les effets animés (VFX) ne sont pas exportés.
 - La correspondance rugosité/métal des shaders du jeu est approchée.
 

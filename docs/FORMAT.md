@@ -133,6 +133,26 @@ par leurs noms : l'icône d'un objet reprend le nom interne (`Icon_avatar_female
 `Sc_Nanoscientist`) et le début de l'ID donne la pièce : 101/102 personnage, 203 haut, 204 bas, 205 chaussures,
 211 tête (cheveux, masque), 214 maquillage. Environ 85 % des tenues trouvent ainsi leurs ID.
 
+Dans l'autre sens, chaque vêtement encore sans modèle prend la pièce dont le nom correspond à son icône sans mot
+en trop : plusieurs objets peuvent ainsi partager une tenue.
+
+## Recettes des vêtements
+
+Beaucoup d'objets n'ont pas de slot à leur nom : le jeu les assemble à partir de recettes.
+
+- `ClothesRecipesBytes` (TextAsset du bundle `assets/android/gameassetbundles/config/clothesrecipesbytes.*`
+  de l'APK principal, rangé dans le `.xapk`) : non chiffré, les noms y sont écrits en CRC32 (polynôme
+  0xEDB88320, comme `zlib.crc32`). Une recette : `uint32 crc32(nom)`, un en-tête de 4 à 16 octets dont le premier
+  vaut 0x01, 0x21, 0x61… et le troisième 3 ou 5, puis des paires `uint32 crc32(slotName), uint32 crc32(overlay)`.
+  Un overlay inconnu (0x001eb0b5…) laisse au slot ses propres textures. Exemple :
+  `male_tshirt_camo_Recipe_N_004` = (`male_clothes_tshirt_N`, `male_tshirt_camo_004_Overlay_N`).
+- Table `Clothes` (TextAsset des données de base) : pour chaque haut (ID 203…), `int32 ID, int32 type, octet 3`, puis
+  4 × (longueur sur un octet, nom ASCII, CRC32 du nom) : recettes du salon et de la partie, homme puis femme.
+
+L'appli relie les hashs aux slots et overlays lus dans les bundles, crée une tenue par recette (nommée d'après son
+overlay : `Male_Top_Cos_Goldenleo_A_Overlay_N` → `Cos_Goldenleo_A`) et prend chaque maillage dans le bundle de son
+slot, les textures dans celui de l'overlay. Les slots `_PBR` d'une recette désignent le slot `_N` (même maillage).
+
 
 ## Maquillage et racines de cheveux (overlays sans maillage)
 

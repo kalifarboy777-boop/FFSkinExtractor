@@ -131,6 +131,50 @@ public sealed class ItemCatalog
         return result.OrderByDescending(m => m.Score).ThenBy(m => m.Item.Id).ToList();
     }
 
+    /// <summary>
+    /// Sens inverse de <see cref="Match"/> : pour chaque objet retenu par <paramref name="wanted"/>, la source
+    /// (nom de tenue et pièce, d'un même genre) dont le nom lui correspond le mieux. Plusieurs objets peuvent
+    /// ainsi partager une source, même quand une autre icône lui correspond encore mieux.
+    /// </summary>
+    /// <returns>ID d'objet → index de la source dans <paramref name="sources"/>.</returns>
+    public Dictionary<long, int> BestSources(string gender, IReadOnlyList<(string Name, string Piece)> sources, Func<GameItem, bool> wanted, int minScore = 7)
+    {
+        var prepared = sources.Select(s =>
+        {
+            var words = Tokens(s.Name);
+            return (s.Piece, Words: words, Key: words.Where(w => !WeakWords.Contains(w)).ToList());
+        }).ToList();
+        // Toute source doit avoir ses mots-clés dans l'icône : on la range sous l'un d'eux
+        var byWord = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+        for (int i = 0; i < prepared.Count; i++)
+        {
+            if (prepared[i].Key.Count == 0) continue;
+            if (!byWord.TryGetValue(prepared[i].Key[0], out var list)) byWord[prepared[i].Key[0]] = list = [];
+            list.Add(i);
+        }
+        var result = new Dictionary<long, int>();
+        foreach (var (item, tokens) in _indexed)
+        {
+            if (item.Gender != null && !item.Gender.Equals(gender, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!wanted(item)) continue;
+            int best = -1, bestScore = minScore - 1;
+            foreach (var t in tokens)
+            {
+                if (!byWord.TryGetValue(t, out var candidates)) continue;
+                foreach (int i in candidates)
+                {
+                    var (piece, words, key) = prepared[i];
+                    if (!SamePiece(item.Piece, piece) || !key.All(tokens.Contains)) continue;
+                    int extra = tokens.Count(w => !words.Contains(w) && !IconNoise.Contains(w) && !PieceWords.Contains(w) && !w.All(char.IsDigit));
+                    int score = 10 * key.Count + words.Count(w => WeakWords.Contains(w) && tokens.Contains(w)) - 3 * extra;
+                    if (score > bestScore || (score == bestScore && best >= 0 && i < best)) (best, bestScore) = (i, score);
+                }
+            }
+            if (best >= 0) result[item.Id] = best;
+        }
+        return result;
+    }
+
     /// <summary>Meilleur objet pour chaque pièce d'une tenue (le personnage lié est rangé sous « Character »).</summary>
     public Dictionary<string, ItemMatch> BestPerPiece(string gender, string outfitName) =>
         Match(gender, outfitName).Where(m => m.Score > 0)
@@ -164,6 +208,23 @@ public sealed class ItemCatalog
                 best = new ItemMatch(item, score);
         }
         return best;
+    }
+
+    // Mots d'icône de bundle qui ne disent rien des vêtements qu'il contient
+    static readonly HashSet<string> BundleNoise = new(StringComparer.Ordinal) { "deluxe", "cos", "sc", "iapbundle", "common", "subscribe" };
+
+    /// <summary>
+    /// Vêtements dont l'icône reprend tous les mots de l'icône d'un bundle de la boutique
+    /// (« Icon_bundle_female_Mullet_38 » → « Icon_avatar_female_top_cos_mullet »…).
+    /// </summary>
+    public List<GameItem> BundleContents(GameItem bundle)
+    {
+        var key = _bundles.Where(b => b.Item.Id == bundle.Id)
+            .SelectMany(b => b.Tokens.Where(t => !BundleNoise.Contains(t) && !IconNoise.Contains(t) && !WeakWords.Contains(t))).ToList();
+        if (key.Count == 0) return [];
+        return _indexed.Where(x => x.Item.Type == "CLOTHES" && key.All(x.Tokens.Contains)
+                                   && (bundle.Gender == null || x.Item.Gender == null || x.Item.Gender == bundle.Gender))
+            .Select(x => x.Item).ToList();
     }
 
     // Mots d'icône de bundle sans rapport avec la tenue ; « hitmanPackage » → « hitman »
