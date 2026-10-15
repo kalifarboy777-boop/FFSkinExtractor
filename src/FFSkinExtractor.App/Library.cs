@@ -189,6 +189,7 @@ public sealed partial class Library : IDisposable
     {
         try
         {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
             CloseBundles();
             _modelCache.Clear();
             lock (_baseParts) { _baseParts.Clear(); _skins.Clear(); }
@@ -303,6 +304,7 @@ public sealed partial class Library : IDisposable
                 BuildFacePaintViews();
             }
             Progress = 1;
+            Console.WriteLine($"Analyse terminée en {clock.ElapsedMilliseconds} ms");
             Message = $"{Characters.Count} personnages, {Bundles.Count(b => b.Available)} bundles, {SlotItems.Count} objets"
                 + (data == null ? " · paquet du jeu absent : pas de corps de base" : "");
             bool again;
@@ -366,7 +368,7 @@ public sealed partial class Library : IDisposable
     {
         try
         {
-            var data = GameData.Open(path);
+            var data = GameData.Open(path, null, Path.Combine(AppSettings.Folder, "apk-index.tsv"));
             data.Find("FemaleBaseRecipe_max_N"); // indexe maintenant plutôt qu'au premier aperçu
             return data;
         }

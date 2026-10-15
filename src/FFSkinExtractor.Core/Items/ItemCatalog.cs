@@ -26,8 +26,14 @@ public sealed partial class ItemCatalog
 
     readonly Dictionary<long, GameItem> _byId = [];
     readonly List<(GameItem Item, HashSet<string> Tokens)> _indexed = [];
+    // Mot d'icône → positions dans _indexed (dans l'ordre), pour ne parcourir que les objets qui ont ce mot
+    readonly Dictionary<string, List<int>> _byToken = new(StringComparer.Ordinal);
 
     readonly List<(GameItem Item, HashSet<string> Tokens)> _bundles = [];
+    // Pour les bundles : nom en minuscules, et index par nom et par mot (mêmes positions que _bundles)
+    readonly List<string> _bundleNames = [];
+    readonly Dictionary<string, List<int>> _bundleByName = new(StringComparer.Ordinal);
+    readonly Dictionary<string, List<int>> _bundleByToken = new(StringComparer.Ordinal);
 
     public IReadOnlyCollection<GameItem> Items => _byId.Values;
 
@@ -85,16 +91,43 @@ public sealed partial class ItemCatalog
                 catalog._byId[id] = bundle;
                 // Les caisses génériques (« Icon_box_3 ») ne disent rien de leur contenu : pas de rapprochement
                 if (r.Description is not (null or "NONE") && !tokens.Contains("box"))
-                    catalog._bundles.Add((bundle, BundleTokens(tokens)));
+                {
+                    var bundleTokens = BundleTokens(tokens);
+                    int at = catalog._bundles.Count;
+                    string lower = bundle.Name.ToLowerInvariant();
+                    catalog._bundleNames.Add(lower);
+                    Index(catalog._bundleByName, lower, at);
+                    foreach (var t in bundleTokens) Index(catalog._bundleByToken, t, at);
+                    catalog._bundles.Add((bundle, bundleTokens));
+                }
                 continue;
             }
             var item = new GameItem(id, r.Description is null or "NONE" ? r.Icon : r.Description, r.Icon,
                 r.Rare ?? "NONE", r.ItemType, PieceOf(id, tokens), gender);
             catalog._byId[id] = item;
+            foreach (var t in tokens) Index(catalog._byToken, t, catalog._indexed.Count);
             catalog._indexed.Add((item, tokens));
         }
         catalog.Emotes = emotes;
         return catalog;
+    }
+
+    static void Index(Dictionary<string, List<int>> index, string key, int position)
+    {
+        if (!index.TryGetValue(key, out var list)) index[key] = list = [];
+        list.Add(position);
+    }
+
+    // Positions des entrées qui ont tous ces mots : celles du mot le plus rare (null si un mot est absent)
+    static List<int>? Rarest(Dictionary<string, List<int>> index, IEnumerable<string> words)
+    {
+        List<int>? best = null;
+        foreach (var w in words)
+        {
+            if (!index.TryGetValue(w, out var at)) return null;
+            if (best == null || at.Count < best.Count) best = at;
+        }
+        return best;
     }
 
     static string EmoteKey(string s) => new(s.ToLowerInvariant().Where(char.IsAsciiLetterOrDigit).ToArray());
@@ -167,8 +200,11 @@ public sealed partial class ItemCatalog
         var key = words.Where(w => !WeakWords.Contains(w)).ToList();
         if (key.Count == 0) return [];
         var result = new List<ItemMatch>();
-        foreach (var (item, tokens) in _indexed)
+        // Un objet retenu a tous les mots-clés : on ne parcourt que ceux qui ont le plus rare
+        if (Rarest(_byToken, key) is not { } candidates) return [];
+        foreach (int c in candidates)
         {
+            var (item, tokens) = _indexed[c];
             if (item.Gender != null && !item.Gender.Equals(gender, StringComparison.OrdinalIgnoreCase)) continue;
             if (piece != "" && !SamePiece(item.Piece, piece)) continue;
             if (!key.All(tokens.Contains)) continue;
@@ -275,11 +311,18 @@ public sealed partial class ItemCatalog
         var key = words.Where(w => !WeakWords.Contains(w)).ToList();
         string? title = displayName?.Trim().ToLowerInvariant();
         ItemMatch? best = null;
-        foreach (var (item, tokens) in _bundles)
+        // Seuls les bundles au nom de la tenue ou qui ont tous ses mots-clés peuvent convenir
+        var candidates = new SortedSet<int>();
+        if (title is { Length: > 2 })
+            foreach (var name in new[] { title, title + " bundle" })
+                if (_bundleByName.TryGetValue(name, out var named)) candidates.UnionWith(named);
+        if (key.Count > 0 && Rarest(_bundleByToken, key) is { } withWords) candidates.UnionWith(withWords);
+        foreach (int c in candidates)
         {
+            var (item, tokens) = _bundles[c];
             if (item.Gender != null && !item.Gender.Equals(gender, StringComparison.OrdinalIgnoreCase)) continue;
             int score;
-            string name = item.Name.ToLowerInvariant();
+            string name = _bundleNames[c];
             if (title != null && title.Length > 2 && (name == title + " bundle" || name == title))
                 score = 30;
             else if (key.Count > 0 && key.All(tokens.Contains))
@@ -305,8 +348,8 @@ public sealed partial class ItemCatalog
     {
         var key = _bundles.Where(b => b.Item.Id == bundle.Id)
             .SelectMany(b => b.Tokens.Where(t => !BundleNoise.Contains(t) && !IconNoise.Contains(t) && !WeakWords.Contains(t))).ToList();
-        if (key.Count == 0) return [];
-        return _indexed.Where(x => x.Item.Type == "CLOTHES" && key.All(x.Tokens.Contains)
+        if (key.Count == 0 || Rarest(_byToken, key) is not { } candidates) return [];
+        return candidates.Select(c => _indexed[c]).Where(x => x.Item.Type == "CLOTHES" && key.All(x.Tokens.Contains)
                                    && (bundle.Gender == null || x.Item.Gender == null || x.Item.Gender == bundle.Gender))
             .Select(x => x.Item).ToList();
     }

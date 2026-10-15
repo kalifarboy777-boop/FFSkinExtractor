@@ -128,6 +128,12 @@ dotnet publish src/FFSkinExtractor.Cli -c Release -r win-x64 --self-contained -p
 | `src/FFSkinExtractor.Cli` | Outil en ligne de commande `ffextract` |
 | `docs/FORMAT.md` | Formats du jeu décodés |
 
+## Démarrage
+
+Au premier lancement (ou après une mise à jour du jeu), FF Skin Studio lit tous les bundles et indexe le paquet du jeu.
+Il garde ensuite ces lectures dans son dossier de réglages (`scan-cache.json`, `apk-index.tsv`) : les lancements suivants ne
+relisent que ce qui a changé et l'interface est prête en quelques secondes.
+
 ## Limites connues
 
 - Seuls les objets téléchargés par le jeu ont un modèle 3D. Pour en avoir plus, ouvre-les dans la boutique ou le

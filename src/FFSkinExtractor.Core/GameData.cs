@@ -19,6 +19,7 @@ public sealed class GameData : IDisposable
     const long MaxIndexedFile = 4_000_000;
 
     readonly Dictionary<string, Func<byte[]>> _files = new(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<string, long> _sizes = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, AssetsFile> _parsed = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, byte[]> _bytes = new(StringComparer.OrdinalIgnoreCase);
     readonly List<IDisposable> _owned = [];
@@ -26,17 +27,26 @@ public sealed class GameData : IDisposable
 
     public int FileCount => _files.Count;
 
+    /// <summary>
+    /// Fichier où garder l'index des noms d'objets entre deux lancements (null : pas de cache). Il est refait
+    /// quand le paquet change (chemin, taille ou date).
+    /// </summary>
+    public string? IndexCachePath { get; init; }
+    string? _source;
+
     /// <summary>Ouvre un .xapk, un .apk, ou un dossier (APK décompressé ou dossier bin/Data).</summary>
-    public static GameData Open(string path, Action<string>? progress = null)
+    public static GameData Open(string path, Action<string>? progress = null, string? indexCachePath = null)
     {
-        var data = new GameData();
+        var data = new GameData { IndexCachePath = indexCachePath };
+        data._source = Directory.Exists(path) ? null : $"{Path.GetFullPath(path)}|{new FileInfo(path).Length}|{File.GetLastWriteTimeUtc(path).Ticks}";
         if (Directory.Exists(path))
         {
             foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
             {
                 var norm = file.Replace('\\', '/');
                 if (norm.Contains("/bin/Data/") || Path.GetDirectoryName(file) == path)
-                    data._files.TryAdd(Path.GetFileName(file), () => File.ReadAllBytes(file));
+                    if (data._files.TryAdd(Path.GetFileName(file), () => File.ReadAllBytes(file)))
+                        data._sizes[Path.GetFileName(file)] = new FileInfo(file).Length;
             }
             return data;
         }
@@ -69,6 +79,7 @@ public sealed class GameData : IDisposable
         {
             if (!e.FullName.StartsWith("assets/bin/Data/") || e.FullName.IndexOf('/', 16) >= 0 || e.Length == 0) continue;
             var entry = e;
+            _sizes.TryAdd(e.Name, e.Length);
             _files.TryAdd(e.Name, () =>
             {
                 lock (zip)
@@ -156,9 +167,12 @@ public sealed class GameData : IDisposable
     void BuildIndex()
     {
         if (_byName != null) return;
+        if (LoadIndex() is { } cached) { _byName = cached; return; }
         var index = new Dictionary<string, List<DataObject>>(StringComparer.Ordinal);
         foreach (var file in _files.Keys.ToList())
         {
+            // Les gros fichiers (maillages, sons) ne sont pas indexés : inutile de les décompresser
+            if (_sizes.GetValueOrDefault(file) > MaxIndexedFile) continue;
             var bytes = Bytes(file);
             bool keep = false;
             if (bytes.Length <= MaxIndexedFile && LooksSerialized(bytes))
@@ -183,6 +197,50 @@ public sealed class GameData : IDisposable
                 lock (_bytes) { _bytes.Remove(file); lock (_parsed) _parsed.Remove(file); }
         }
         _byName = index;
+        SaveIndex(index);
+    }
+
+    // Index en cache : une ligne d'en-tête (le paquet), puis « nom, fichier, PathId, type » par objet
+    const string IndexFormat = "ffss-index-1";
+
+    Dictionary<string, List<DataObject>>? LoadIndex()
+    {
+        if (IndexCachePath == null || _source == null || !File.Exists(IndexCachePath)) return null;
+        try
+        {
+            using var r = new StreamReader(IndexCachePath, Encoding.UTF8);
+            if (r.ReadLine() != IndexFormat || r.ReadLine() != _source) return null;
+            var index = new Dictionary<string, List<DataObject>>(StringComparer.Ordinal);
+            while (r.ReadLine() is { } line)
+            {
+                var f = line.Split('\t');
+                if (f.Length != 4 || !_files.ContainsKey(f[1])) return null;
+                var o = new DataObject(f[1], long.Parse(f[2]), (AssetClassID)int.Parse(f[3]), f[0]);
+                if (!index.TryGetValue(o.Name, out var list)) index[o.Name] = list = [];
+                list.Add(o);
+            }
+            return index;
+        }
+        catch (Exception) { return null; }
+    }
+
+    void SaveIndex(Dictionary<string, List<DataObject>> index)
+    {
+        if (IndexCachePath == null || _source == null) return;
+        try
+        {
+            string tmp = IndexCachePath + ".tmp";
+            using (var w = new StreamWriter(tmp, false, new UTF8Encoding(false)))
+            {
+                w.WriteLine(IndexFormat);
+                w.WriteLine(_source);
+                foreach (var o in index.Values.SelectMany(l => l))
+                    if (!o.Name.Contains('\t') && !o.Name.Contains('\n') && !o.Name.Contains('\r'))
+                        w.WriteLine($"{o.Name}\t{o.File}\t{o.PathId}\t{(int)o.Type}");
+            }
+            File.Move(tmp, IndexCachePath, true);
+        }
+        catch (Exception) { /* pas de cache : l'index sera refait au prochain lancement */ }
     }
 
     // En-tête d'un fichier sérialisé Unity : taille des métadonnées, taille du fichier (big-endian), version
