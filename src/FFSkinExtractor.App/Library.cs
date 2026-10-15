@@ -60,10 +60,11 @@ public sealed record Arrival(string Name, string Gender, string? Bundle, Diction
 
 /// <summary>Ce que l'interface demande : un personnage, et des objets par emplacement (Cheveux, Masque, Haut…).</summary>
 public sealed record Look(string Gender, bool HighDetail, string? Character, Dictionary<string, string>? Slots,
-    bool Base = true, bool Skinned = true, bool Pbr = true, string? Emote = null);
+    bool Base = true, bool Skinned = true, bool Pbr = true, string? Emote = null, bool Effects = true);
 
 /// <summary>Une emote, avec les genres pour lesquels le jeu a son animation.</summary>
-public sealed record EmoteEntry(string Key, string Name, string Category, string? Icon, long? Id, IReadOnlyList<string> Genders, bool Available);
+public sealed record EmoteEntry(string Key, string Name, string Category, string? Icon, long? Id, IReadOnlyList<string> Genders, bool Available,
+    string? Rarity = null);
 
 /// <summary>Pièces choisies : pour chaque type de pièce, la tenue d'où elle vient.</summary>
 public sealed record Selection(string Gender, bool HighDetail, Dictionary<string, string> Pieces,
@@ -76,6 +77,8 @@ public sealed record Selection(string Gender, bool HighDetail, Dictionary<string
     public string? FacePaint { get; init; }
     /// <summary>Emote jouée (clé de <see cref="EmoteEntry"/>), ou null.</summary>
     public string? Emote { get; init; }
+    /// <summary>Exporte aussi les effets de l'emote (objets animés, particules).</summary>
+    public bool Effects { get; init; } = true;
 }
 
 /// <summary>Overlay de maquillage ou de racines de cheveux, trouvé dans un bundle (ou dans l'APK si Bundle est null).</summary>
@@ -742,10 +745,10 @@ public sealed partial class Library : IDisposable
         _emoteClips = best.ToDictionary(b => b.Key, b => (b.Value.Bundle, b.Value.PathId));
         lock (_emoteCache) _emoteCache.Clear();
         var list = info.Select(n => new EmoteEntry(n.Key, n.Value.Name, n.Value.Category, n.Value.Item?.IconUrl, n.Value.Item?.Id,
-                new[] { "Male", "Female" }.Where(g => best.ContainsKey((n.Key, g))).ToList(), true)).ToList();
+                new[] { "Male", "Female" }.Where(g => best.ContainsKey((n.Key, g))).ToList(), true, n.Value.Item?.Rarity)).ToList();
         foreach (var item in Catalog?.Emotes ?? [])
             if (!info.ContainsKey(item.Id.ToString()))
-                list.Add(new EmoteEntry(item.Id.ToString(), item.Name, CategoryOf(item.Type), item.IconUrl, item.Id, [], false));
+                list.Add(new EmoteEntry(item.Id.ToString(), item.Name, CategoryOf(item.Type), item.IconUrl, item.Id, [], false, item.Rarity));
         Emotes = list.OrderBy(e => Array.IndexOf(EmoteCategories, e.Category)).ThenBy(e => !e.Available)
             .ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList();
     }
@@ -1087,7 +1090,7 @@ public sealed partial class Library : IDisposable
         }
         var sel = new Selection(look.Gender, look.HighDetail, pieces, look.Base, look.Skinned, look.Pbr)
             { Name = $"{look.Gender}_{name ?? "Base"}{(look.HighDetail ? "_HD" : "")}", Character = character, FacePaint = facePaint,
-              Emote = look.Emote is { Length: > 0 } e && Emotes.Any(x => x.Key == e && x.Available) ? e : null };
+              Emote = look.Emote is { Length: > 0 } e && Emotes.Any(x => x.Key == e && x.Available) ? e : null, Effects = look.Effects };
         return (sel, unknown);
     }
 
@@ -1113,9 +1116,9 @@ public sealed partial class Library : IDisposable
     public async Task<byte[]> BuildAsync(Selection sel, CancellationToken ct = default)
     {
         string key = string.Join("|", sel.Gender, sel.HighDetail, sel.Base, sel.Skinned, sel.Pbr,
-            string.Join(",", sel.Pieces.OrderBy(p => p.Key).Select(p => p.Key + "=" + p.Value)), sel.Name, sel.Character, sel.FacePaint, sel.Emote);
+            string.Join(",", sel.Pieces.OrderBy(p => p.Key).Select(p => p.Key + "=" + p.Value)), sel.Name, sel.Character, sel.FacePaint, sel.Emote, sel.Effects);
         var emote = sel.Emote == null ? null : EmoteFor(sel.Emote, sel.Gender);
-        var vfx = sel.Emote == null || emote == null ? null : VfxFor(sel.Emote, sel.Gender);
+        var vfx = sel.Emote == null || emote == null || !sel.Effects ? null : VfxFor(sel.Emote, sel.Gender);
         if (_modelCache.TryGetValue(key, out var cached)) return cached;
         var glb = await WithPartsAsync(sel, (name, parts) =>
             GlbExporter.Build(name, sel.Gender, parts, new ExportOptions { Skinned = sel.Skinned || emote != null, Pbr = sel.Pbr, Emote = emote, Vfx = vfx })

@@ -23,7 +23,8 @@ un format compressé propre au jeu, qu'AssetStudio ne sait pas lire. Ce projet d
 - **Effets d'emote (VFX)** : les objets de l'emote (cheval de Brisk Gallop, pingouin, cubes lumineux…) avec leurs
   animations et leurs textures, dans l'aperçu et dans le GLB. Les particules (éclaboussures, notes, éclats) sont
   simulées dans l'aperçu à partir des réglages du jeu, et cuites dans le GLB : chaque particule y devient un petit
-  plan animé (position, taille, rotation), qui s'ouvre tel quel dans Blender.
+  plan animé (position, taille, rotation), qui s'ouvre tel quel dans Blender. Le bouton ✨ sous l'aperçu les
+  affiche ou les coupe (coupés par défaut) ; le choix vaut aussi pour le `.glb` exporté.
 - **Corps de base** : peau, visage, cheveux et tenue de départ du jeu, remplacés par les pièces choisies.
 - **Matériaux PBR** : couleur, normales, rugosité, métal et occlusion depuis les textures `_N`, `_S` et `_PBR`,
   transparence (lunettes, voiles) et découpe (cheveux).
@@ -74,8 +75,11 @@ indique le dossier des données dans **Réglages** : l'analyse prend quelques se
 - En haut, **Catalogue complet** : les ~12 700 objets d'ItemID2, filtrables par type (bundles, personnages, têtes,
   maquillages, hauts, bas, chaussures) et par nom, ID ou rareté. Un clic sur un objet « 3D » l'essaie ;
   un objet « Absent » n'a pas encore été téléchargé par le jeu.
-- À gauche toujours, **Emote** : choisis une emote (onglets par type, icônes ; l'onglet « Absentes » liste celles
-  que le jeu n'a pas encore téléchargées). Le bouton lecture/pause apparaît dans les outils de l'aperçu, la caméra
+- **Emote** : sous l'aperçu, une barre montre l'emote jouée avec ‹ › pour passer à la précédente ou à la suivante
+  (flèches du clavier aussi), ✨ pour les effets et ✕ pour l'arrêter. Un clic sur l'emote ouvre la grille dans
+  l'aperçu : recherche, onglets par type, icônes aux couleurs de rareté du jeu ; elle reste ouverte pour en essayer
+  plusieurs (Échap la ferme). L'onglet « Absentes » liste celles que le jeu n'a pas encore téléchargées, ou qui
+  sont dans un bundle chiffré. Le bouton lecture/pause apparaît dans les outils de l'aperçu, la caméra
   suit le personnage, et l'animation part avec le `.glb`.
 - Au centre : fais tourner avec la souris, molette pour zoomer ; boutons pour recadrer, rotation automatique,
   fil de fer, squelette, fond clair et capture PNG.

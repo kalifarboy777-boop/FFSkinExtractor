@@ -95,6 +95,21 @@
         <h2>Choisis une tenue</h2>
         <p>Choisis un personnage, puis un bundle ou des ID d'objets à gauche.</p>
       </div>
+      <div class="emote-dock hidden" id="emoteDock">
+        <button class="tool" id="emotePrev" title="Emote précédente">‹</button>
+        <button class="emote-current" id="emoteOpen" title="Choisir une emote"></button>
+        <button class="tool" id="emoteNext" title="Emote suivante">›</button>
+        <button class="tool" id="emoteFx" title="Effets de l'emote (cheval, particules…)">✨</button>
+        <button class="tool hidden" id="emoteStop" title="Sans emote">✕</button>
+      </div>
+      <div class="emote-panel hidden" id="emotePanel">
+        <div class="emote-panel-head">
+          <input type="search" id="emoteSearch" placeholder="Rechercher une emote…">
+          <button class="tool" id="emoteClose" title="Fermer">✕</button>
+        </div>
+        <div class="tabs" id="emoteTabs"></div>
+        <div class="emote-grid" id="emoteGrid"></div>
+      </div>
       <div class="viewer-loading hidden" id="loading"><div class="spinner"></div><span id="loadingText">Assemblage du modèle…</span></div>
       <div class="toast hidden" id="toast"></div>
     </section>

@@ -19,6 +19,11 @@ const SLOTS = [
   { key: 'Shoe', keys: ['Shoe'], label: 'Chaussures', hint: 'Chaussures' },
 ];
 
+const store = {
+  get(key, fallback) { try { return JSON.parse(localStorage.getItem('ffss2.' + key)) ?? fallback; } catch { return fallback; } },
+  set(key, value) { try { localStorage.setItem('ffss2.' + key, JSON.stringify(value)); } catch { /* stockage indisponible */ } },
+};
+
 const state = {
   catalog: { characters: [], items: [], bundles: [] },
   gender: 'Male',
@@ -27,6 +32,7 @@ const state = {
   bundle: null,        // valeur du bundle appliqué (affichage seulement)
   slots: {},           // emplacement → ID d'objet saisi
   emote: null,         // clé de l'emote jouée, ou null
+  effects: store.get('effects', false), // effets des emotes (cheval, particules…) affichés et exportés
   emotes: [],
   options: { base: true, skinned: true, pbr: true, textures: false },
   status: null,
@@ -34,10 +40,6 @@ const state = {
 };
 
 const $ = id => document.getElementById(id);
-const store = {
-  get(key, fallback) { try { return JSON.parse(localStorage.getItem('ffss2.' + key)) ?? fallback; } catch { return fallback; } },
-  set(key, value) { try { localStorage.setItem('ffss2.' + key, JSON.stringify(value)); } catch { /* stockage indisponible */ } },
-};
 Object.assign(state, store.get('look', {}));
 state.options = { ...state.options, ...store.get('options', {}) };
 
@@ -310,7 +312,7 @@ function look() {
   return {
     gender: state.gender, highDetail: state.hd, character: state.character, slots: state.slots,
     base: state.options.base, skinned: state.options.skinned, pbr: state.options.pbr,
-    emote: state.emote,
+    emote: state.emote, effects: state.effects,
   };
 }
 
@@ -443,39 +445,122 @@ const genderLabel = g => g === 'Male' ? 'Homme' : 'Femme';
 const emoteSub = e => !e.available ? 'Pas dans tes fichiers'
   : e.genders.includes(state.gender) ? `${e.category}${e.id ? ' · ID ' + e.id : ''}`
   : `${e.category} · animation ${genderLabel(e.genders[0]).toLowerCase()}`;
+const emoteThumb = (e, cls = 'thumb') => {
+  const t = thumb(e?.icon, e ? initials(e.name) : '–', cls + ' emote-icon');
+  if (e?.rarity) t.dataset.rarity = e.rarity;
+  return t;
+};
+
 function renderEmotePicker() {
   const host = $('emotePicker');
   host.innerHTML = '';
   const e = currentEmote();
   const btn = el('button', 'choice');
   btn.type = 'button';
-  btn.append(thumb(e?.icon, e ? initials(e.name) : '–'));
+  btn.append(emoteThumb(e));
   const body = el('div');
   body.style.minWidth = '0';
   body.append(el('div', 'title', e ? e.name : 'Aucune emote'));
   body.append(el('div', 'sub', e ? emoteSub(e) : `${state.emotes.filter(x => x.available).length} emotes dans tes fichiers`));
   btn.append(body, el('span', 'chev', '▾'));
-  btn.onclick = () => {
-    if (host.classList.contains('open')) return closePickers();
-    const options = [{ value: '', title: 'Aucune emote', sub: 'Pose de repos', category: '*' },
-      ...state.emotes.map(x => ({
-        value: x.key, title: x.name, sub: emoteSub(x), icon: x.icon, missing: !x.available, category: x.category,
-        tag: x.available ? null : 'Absente',
-      }))];
-    const tabs = [{ key: 'all', label: 'Toutes', filter: o => !o.missing },
-      ...EMOTE_CATEGORIES.map(c => ({ key: c, label: c, filter: o => !o.missing && (o.category === c || o.category === '*') }))
-        .filter(t => options.some(o => o.category === t.key)),
-      { key: 'missing', label: 'Absentes', filter: o => o.missing }];
-    showPopover(host, {
-      options, selected: state.emote ?? '', placeholder: 'Rechercher une emote…', tabs,
-      onPick: o => {
-        if (o.missing) return toast("Cette emote n'est pas dans tes fichiers : ouvre-la une fois dans le jeu, puis relance l'analyse.", true);
-        state.emote = o.value || null; render(); requestModel();
-      },
-    });
-  };
+  btn.onclick = () => toggleEmotePanel();
   host.append(btn);
+  renderEmoteDock();
 }
+
+// ---- Emotes dans l'aperçu : barre (précédente / suivante) et grille qui reste ouverte pendant les essais ----
+const emotePanel = { tab: 'all' };
+function emoteTabs() {
+  const missing = state.emotes.filter(x => !x.available);
+  return [{ key: 'all', label: 'Toutes', filter: x => x.available },
+    ...EMOTE_CATEGORIES.map(c => ({ key: c, label: c, filter: x => x.available && x.category === c }))
+      .filter(t => state.emotes.some(t.filter)),
+    ...(missing.length ? [{ key: 'missing', label: 'Absentes', filter: x => !x.available }] : [])];
+}
+
+function emoteList() {
+  const tab = emoteTabs().find(t => t.key === emotePanel.tab) ?? emoteTabs()[0];
+  const words = $('emoteSearch').value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  return state.emotes.filter(tab.filter).filter(x => words.every(w => `${x.name} ${x.id ?? ''} ${x.category}`.toLowerCase().includes(w)));
+}
+
+function pickEmote(x) {
+  if (x && !x.available) return toast("Cette emote n'est pas lisible : absente de tes fichiers, ou rangée dans un bundle chiffré par le jeu.", true);
+  state.emote = x?.key ?? null;
+  render();
+  requestModel();
+}
+
+function drawEmotePanel() {
+  const tabs = emoteTabs(), bar = $('emoteTabs');
+  bar.innerHTML = '';
+  for (const t of tabs) {
+    const b = el('button', t.key === emotePanel.tab ? 'active' : '', `${t.label} (${state.emotes.filter(t.filter).length})`);
+    b.type = 'button';
+    b.onclick = () => { emotePanel.tab = t.key; drawEmotePanel(); };
+    bar.append(b);
+  }
+  const grid = $('emoteGrid');
+  grid.innerHTML = '';
+  const list = emoteList();
+  if (!list.length) grid.append(el('div', 'empty-note', 'Aucun résultat.'));
+  for (const x of list.slice(0, 400)) {
+    const b = el('button', 'emote-tile' + (x.key === state.emote ? ' selected' : '') + (x.available ? '' : ' missing'));
+    b.type = 'button';
+    b.title = emoteSub(x);
+    b.append(emoteThumb(x), el('span', '', x.name));
+    b.onclick = () => pickEmote(x);
+    grid.append(b);
+  }
+}
+
+function toggleEmotePanel(open = $('emotePanel').classList.contains('hidden')) {
+  $('emotePanel').classList.toggle('hidden', !open);
+  if (open) { drawEmotePanel(); $('emoteSearch').focus(); }
+}
+
+function renderEmoteDock() {
+  $('emoteDock').classList.toggle('hidden', !state.emotes.some(x => x.available));
+  const e = currentEmote(), cur = $('emoteOpen');
+  cur.innerHTML = '';
+  cur.append(emoteThumb(e), el('span', '', e ? e.name : 'Choisir une emote'));
+  $('emoteStop').classList.toggle('hidden', !e);
+  if (!$('emotePanel').classList.contains('hidden')) drawEmotePanel();
+}
+
+// Emote précédente / suivante dans la liste affichée (onglet et recherche de la grille)
+function stepEmote(delta) {
+  const list = emoteList().filter(x => x.available);
+  if (!list.length) return;
+  const i = list.findIndex(x => x.key === state.emote);
+  const next = i < 0 ? (delta > 0 ? 0 : list.length - 1) : (i + delta + list.length) % list.length;
+  pickEmote(list[next]);
+}
+
+function setEffectsButton() {
+  $('emoteFx').classList.toggle('on', state.effects);
+  $('emoteFx').title = state.effects ? 'Effets affichés : cliquer pour les couper' : 'Effets coupés : cliquer pour les afficher';
+}
+
+$('emoteOpen').onclick = () => toggleEmotePanel();
+$('emoteClose').onclick = () => toggleEmotePanel(false);
+$('emotePrev').onclick = () => stepEmote(-1);
+$('emoteNext').onclick = () => stepEmote(1);
+$('emoteStop').onclick = () => pickEmote(null);
+$('emoteFx').onclick = () => {
+  state.effects = !state.effects;
+  store.set('effects', state.effects);
+  setEffectsButton();
+  if (state.emote) loadEmote();
+};
+setEffectsButton();
+$('emoteSearch').oninput = () => drawEmotePanel();
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') toggleEmotePanel(false);
+  if (e.target.closest?.('input, textarea')) return;
+  if (e.key === 'ArrowRight' && state.emote) stepEmote(1);
+  if (e.key === 'ArrowLeft' && state.emote) stepEmote(-1);
+});
 
 // ---- Bundle ----
 function renderBundlePicker() {
@@ -819,6 +904,7 @@ async function loadEmote() {
     emoteLoading = false;
     $('loading').classList.add('hidden');
     // Effets : objets animés (et particules cuites, remplacées ici par la simulation)
+    if (!state.effects) return;
     const fx = await postLook('api/emote?effects=true', body, ctrl.signal);
     if (!fx.ok || fx.status === 204 || !alive()) return;
     const fxGltf = await loader.parseAsync(await fx.arrayBuffer(), '');
@@ -856,7 +942,7 @@ function graftEffects(fxScene) {
 
 // Le modèle ne dépend pas de l'emote : changer d'emote ne le recharge pas
 function modelLook() {
-  return { ...look(), emote: null, skinned: state.options.skinned || !!state.emote };
+  return { ...look(), emote: null, effects: true, skinned: state.options.skinned || !!state.emote };
 }
 
 let pending = null, requestTimer = null, shownLook = null;

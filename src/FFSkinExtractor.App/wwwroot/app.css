@@ -285,3 +285,47 @@ dialog.browser[open] { display: flex; }
 .startup small { font-size: 11px; padding-left: 24px; }
 .startup a { color: var(--accent); }
 .danger-text { color: #f87171; margin-right: auto; }
+
+/* ---- Emotes : icônes sur fond de rareté (comme dans le jeu), barre et grille dans l'aperçu ---- */
+.emote-icon { background: linear-gradient(160deg, var(--r1, #3a404c), var(--r2, #1d2129)); border-radius: 10px; overflow: hidden; }
+.emote-icon img { filter: drop-shadow(0 1px 2px rgba(0,0,0,.45)); }
+.emote-icon[data-rarity="WHITE"] { --r1: #a7adb8; --r2: #4b505a; }
+.emote-icon[data-rarity="GREEN"] { --r1: #49c06a; --r2: #17532a; }
+.emote-icon[data-rarity="BLUE"] { --r1: #3f8cf0; --r2: #163d7d; }
+.emote-icon[data-rarity^="PURPLE"] { --r1: #a05cf2; --r2: #3d1a73; }
+.emote-icon[data-rarity^="ORANGE"] { --r1: #f5a63c; --r2: #8a3f0e; }
+.emote-icon[data-rarity="RED"] { --r1: #f0525a; --r2: #761522; }
+.emote-dock {
+  position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; align-items: center; gap: 6px;
+  padding: 6px; border-radius: 14px; background: rgba(20, 23, 29, .82); border: 1px solid var(--line); backdrop-filter: blur(6px);
+}
+.emote-dock .tool { font-size: 20px; line-height: 1; }
+.emote-current {
+  display: flex; align-items: center; gap: 10px; min-width: 200px; max-width: 320px; padding: 4px 12px 4px 4px;
+  border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); text-align: left;
+}
+.emote-current .thumb { width: 40px; height: 40px; flex: none; }
+.emote-current span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.emote-panel {
+  position: absolute; left: 16px; right: 76px; bottom: 76px; max-height: min(62%, 560px); display: flex; flex-direction: column; gap: 8px;
+  padding: 10px; border-radius: 14px; background: rgba(20, 23, 29, .94); border: 1px solid var(--line);
+  box-shadow: 0 18px 50px rgba(0,0,0,.55); backdrop-filter: blur(6px); z-index: 15;
+}
+.emote-panel-head { display: flex; gap: 8px; }
+.emote-panel-head input { flex: 1; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; outline: none; }
+.emote-panel .tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.emote-panel .tabs button { padding: 3px 10px; border-radius: 99px; font-size: 12px; color: var(--muted); background: transparent; }
+.emote-panel .tabs button.active { background: var(--accent); color: #141414; border-color: var(--accent); }
+.emote-grid { overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; padding: 2px; }
+.emote-tile {
+  display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 4px; border-radius: 12px;
+  background: transparent; border: 2px solid transparent; font-size: 11px; text-align: center;
+}
+.emote-tile .thumb { width: 76px; height: 76px; }
+.emote-tile span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.25; }
+.emote-tile:hover { background: var(--panel-2); }
+.emote-tile.selected { border-color: var(--accent); }
+.emote-tile.missing { opacity: .4; }
+.emote-current .thumb, .emote-tile .thumb { display: grid; place-items: center; overflow: hidden; color: #e8ebf1; font-weight: 700; }
+.emote-current .thumb img, .emote-tile .thumb img { width: 100%; height: 100%; object-fit: contain; }
+.choice .thumb.emote-icon, .option .thumb.emote-icon { background: linear-gradient(160deg, var(--r1, #3a404c), var(--r2, #1d2129)); }
