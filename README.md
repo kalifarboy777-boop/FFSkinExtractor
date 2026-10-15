@@ -20,6 +20,9 @@ un format compressé propre au jeu, qu'AssetStudio ne sait pas lire. Ce projet d
 - **Emotes** : toutes les emotes présentes dans tes fichiers (y compris celles rangées avec les tenues), avec leur nom
   et leur icône ItemID2, triées par onglet : emotes, emotes d'entrée, super emotes, look changer, poses de tenue.
   Elles se jouent sur la tenue dans l'aperçu et sont incluses dans le GLB exporté (animation du squelette).
+- **Effets d'emote (VFX)** : les objets de l'emote (cheval de Brisk Gallop, pingouin, cubes lumineux…) avec leurs
+  animations et leurs textures, dans l'aperçu et dans le GLB ; les particules (éclaboussures, notes, éclats) sont
+  simulées dans l'aperçu à partir des réglages du jeu.
 - **Corps de base** : peau, visage, cheveux et tenue de départ du jeu, remplacés par les pièces choisies.
 - **Matériaux PBR** : couleur, normales, rugosité, métal et occlusion depuis les textures `_N`, `_S` et `_PBR`,
   transparence (lunettes, voiles) et découpe (cheveux).
@@ -126,8 +129,9 @@ dotnet publish src/FFSkinExtractor.Cli -c Release -r win-x64 --self-contained -p
   coffre-fort, ou télécharge toutes les ressources dans les paramètres du jeu, puis recopie le dossier et relance l'analyse.
 - Hors des hauts (table « Clothes » du jeu), les ID sont trouvés par le nom : un objet dont l'icône a un mot de plus
   que toutes les tenues (souvent un coloris absent des fichiers) reste sans modèle plutôt que d'en prendre un faux.
-- Une partie des bundles récents est stockée chiffrée par le jeu : leurs emotes ne sont pas lues.
-  Les effets animés (VFX) et les accessoires d'emote ne sont pas exportés.
+- Une partie des bundles récents est stockée chiffrée par le jeu : leurs emotes et leurs effets ne sont pas lus.
+- Les shaders des effets sont chiffrés eux aussi : la transparence et la lueur sont déduites des réglages des
+  matériaux (approché). Les particules ne sont pas dans le GLB (glTF ne les décrit pas), seulement dans l'aperçu.
 - La correspondance rugosité/métal des shaders du jeu est approchée.
 
 ## Crédits

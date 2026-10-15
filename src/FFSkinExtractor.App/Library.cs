@@ -137,6 +137,10 @@ public sealed partial class Library : IDisposable
     // Clip de chaque emote par genre : bundle et objet
     Dictionary<(string Key, string Gender), (string Bundle, long PathId)> _emoteClips = [];
     readonly Dictionary<(string, string), EmoteClip> _emoteCache = [];
+    readonly Dictionary<(string, string), EmoteVfx?> _vfxCache = [];
+    // Tous les fichiers du dossier, et le fichier de chaque « cab-… » (lu à la première emote avec effets)
+    List<string> _allFiles = [];
+    Dictionary<string, string>? _cabIndex;
     public ItemCatalog? Catalog { get; private set; }
     public string? GamePackage { get; private set; }
     public int BundleCount { get; private set; }
@@ -191,6 +195,7 @@ public sealed partial class Library : IDisposable
             Message = "Recherche des bundles de tenues…";
             var files = Directory.EnumerateFiles(folder, "*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true })
                 .ToList();
+            lock (_emoteCache) { _allFiles = files; _cabIndex = null; _vfxCache.Clear(); _emoteCache.Clear(); }
             // Un même bundle peut être présent plusieurs fois (ancienne copie, version récupérée de l'appareil) :
             // on garde la plus récente
             var bundles = files.Where(f => GameBundle.IsOutfitBundle(f) || EmoteReader.IsEmoteBundle(f)).Where(GameBundle.IsDownloaded)
@@ -803,6 +808,47 @@ public sealed partial class Library : IDisposable
     }
 
     /// <summary>
+    /// Effets (VFX) d'une emote : objets (cheval, pingouin…) et particules, rangés dans le bundle de son animation.
+    /// Leurs textures sont partagées dans d'autres bundles, retrouvés par le nom de leur fichier « cab-… ».
+    /// </summary>
+    public EmoteVfx? VfxFor(string key, string gender)
+    {
+        lock (_emoteCache)
+        {
+            if (_vfxCache.TryGetValue((key, gender), out var cached)) return cached;
+            string other = gender == "Male" ? "Female" : "Male";
+            if (!_emoteClips.TryGetValue((key, gender), out var source) && !_emoteClips.TryGetValue((key, other), out source)) return null;
+            var open = new Dictionary<string, GameBundle>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                using var b = new GameBundle(source.Bundle);
+                string clip = b.GetInfo(source.PathId) is { } info ? b.ReadName(info) : "";
+                GameBundle? Resolve(string cab)
+                {
+                    _cabIndex ??= BuildCabIndex(_allFiles);
+                    if (!_cabIndex.TryGetValue(cab, out var file)) return null;
+                    if (!open.TryGetValue(file, out var gb)) open[file] = gb = new GameBundle(file);
+                    return gb;
+                }
+                return _vfxCache[(key, gender)] = clip.Length == 0 ? null : EmoteVfxReader.Read(b, clip, gender, Resolve);
+            }
+            catch (Exception) { return _vfxCache[(key, gender)] = null; }
+            finally { foreach (var gb in open.Values) gb.Dispose(); }
+        }
+    }
+
+    static Dictionary<string, string> BuildCabIndex(List<string> files)
+    {
+        var index = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var f in files.Where(GameBundle.IsDownloaded).OrderByDescending(File.GetLastWriteTimeUtc))
+        {
+            if (GameBundle.IsEncrypted(f)) continue;
+            foreach (var cab in GameBundle.CabNames(f)) index.TryAdd(cab, f);
+        }
+        return index;
+    }
+
+    /// <summary>
     /// La table « Clothes » ne relie que les hauts. Les autres pièces du même ensemble (« The Streets (Shoes) »,
     /// « The Streets (Pants) ») suivent le haut (« The Streets (Jacket) ») vers la même tenue, plutôt qu'une tenue
     /// au nom voisin (« Cos_Hip_hop » au lieu de « Cos_Hip_hop2 »).
@@ -1068,9 +1114,10 @@ public sealed partial class Library : IDisposable
         string key = string.Join("|", sel.Gender, sel.HighDetail, sel.Base, sel.Skinned, sel.Pbr,
             string.Join(",", sel.Pieces.OrderBy(p => p.Key).Select(p => p.Key + "=" + p.Value)), sel.Name, sel.Character, sel.FacePaint, sel.Emote);
         var emote = sel.Emote == null ? null : EmoteFor(sel.Emote, sel.Gender);
+        var vfx = sel.Emote == null || emote == null ? null : VfxFor(sel.Emote, sel.Gender);
         if (_modelCache.TryGetValue(key, out var cached)) return cached;
         var glb = await WithPartsAsync(sel, (name, parts) =>
-            GlbExporter.Build(name, sel.Gender, parts, new ExportOptions { Skinned = sel.Skinned || emote != null, Pbr = sel.Pbr, Emote = emote })
+            GlbExporter.Build(name, sel.Gender, parts, new ExportOptions { Skinned = sel.Skinned || emote != null, Pbr = sel.Pbr, Emote = emote, Vfx = vfx })
                 .ToGltf2().WriteGLB().ToArray(), ct);
         if (_modelCache.Count > 24) _modelCache.Clear();
         _modelCache[key] = glb;

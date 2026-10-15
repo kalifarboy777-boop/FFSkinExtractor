@@ -122,6 +122,13 @@ app.MapPost("/api/model", async (Look look, CancellationToken ct) =>
     catch (Exception e) when (e is not OperationCanceledException) { return Results.Problem(e.Message); }
 });
 
+app.MapPost("/api/vfx", (Look look) =>
+{
+    var (sel, _) = library.Resolve(look);
+    var vfx = sel.Emote == null ? null : library.VfxFor(sel.Emote, sel.Gender);
+    return Results.Text(VfxPreview.Json(vfx).ToJsonString(), "application/json");
+});
+
 app.MapPost("/api/resolve", (Look look) =>
 {
     var (sel, unknown) = library.Resolve(look);

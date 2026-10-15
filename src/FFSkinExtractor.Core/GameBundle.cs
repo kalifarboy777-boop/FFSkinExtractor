@@ -162,6 +162,29 @@ public sealed partial class GameBundle : IDisposable
 
     public AssetTypeValueField BaseField(AssetFileInfo info) => _am.GetBaseField(_file, info);
 
+    /// <summary>Nom (« cab-… ») du fichier visé par une référence externe (m_FileID ≥ 1), ou null.</summary>
+    public string? ExternalCab(int fileId)
+    {
+        var ext = _file.file.Metadata.Externals;
+        if (fileId < 1 || fileId > ext.Count) return null;
+        string path = ext[fileId - 1].PathName;
+        return path.StartsWith("archive:/", StringComparison.OrdinalIgnoreCase) ? path[(path.LastIndexOf('/') + 1)..] : null;
+    }
+
+    /// <summary>Noms des fichiers (« CAB-… ») d'un bundle, lus dans son en-tête sans le décompresser.</summary>
+    public static List<string> CabNames(string path)
+    {
+        try
+        {
+            using var s = File.OpenRead(path);
+            if (IsGzip(s)) return [];
+            var b = new AssetBundleFile();
+            b.Read(new AssetsFileReader(s));
+            return b.BlockAndDirInfo.DirectoryInfos.Select(d => d.Name).Where(n => !n.Contains('.')).ToList();
+        }
+        catch (Exception) { return []; }
+    }
+
     /// <summary>Nom d'un objet (premier champ, « m_Name »), lu sans décoder le reste.</summary>
     public string ReadName(AssetFileInfo info)
     {

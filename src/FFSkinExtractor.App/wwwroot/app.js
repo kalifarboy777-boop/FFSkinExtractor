@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { VfxPlayer } from './vfx.js';
 
 // ---------------------------------------------------------------------------
 // Données et état
@@ -686,10 +687,20 @@ new ResizeObserver(resize).observe(canvas.parentElement);
 resize();
 
 const clock = new THREE.Clock();
-let mixer = null, emoteAction = null;
+let mixer = null, emoteAction = null, vfx = null, lastTime = 0;
 renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
-  if (mixer && emoteAction && !emoteAction.paused) { mixer.update(dt); follow(); }
+  if (mixer && emoteAction && !emoteAction.paused) {
+    mixer.update(dt);
+    follow();
+    if (vfx) {
+      // L'emote reprend du début : les effets aussi
+      if (emoteAction.time < lastTime) vfx.restart();
+      lastTime = emoteAction.time;
+      model.updateMatrixWorld(true);
+      vfx.update(dt);
+    }
+  }
   if (view.rotate && model) model.rotation.y += 0.006;
   controls.update();
   renderer.render(scene, camera);
@@ -700,16 +711,18 @@ let followBone = null, followLast = null;
 function follow() {
   if (!followBone) return;
   const p = followBone.getWorldPosition(new THREE.Vector3());
-  if (followLast) {
-    const d = p.clone().sub(followLast);
-    controls.target.add(d);
-    camera.position.add(d);
-  }
+  // Au début de l'emote, la caméra se recentre sur le bassin (une entrée commence parfois loin du centre)
+  const d = p.clone().sub(followLast ?? controls.target);
+  controls.target.add(d);
+  camera.position.add(d);
   followLast = p;
 }
 
 function frame(object, keepAngle = false) {
-  const box = new THREE.Box3().setFromObject(object);
+  // Cadrage sur le personnage seul : les effets d'emote (« VFX_… ») débordent largement
+  const box = new THREE.Box3();
+  object.updateMatrixWorld(true);
+  object.traverse(o => { if (o.isMesh && !isVfx(o)) box.expandByObject(o); });
   if (box.isEmpty()) return;
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
@@ -717,6 +730,13 @@ function frame(object, keepAngle = false) {
   const dir = keepAngle ? camera.position.clone().sub(controls.target).normalize() : new THREE.Vector3(0, 0.08, 1).normalize();
   controls.target.copy(center);
   camera.position.copy(center).addScaledVector(dir, dist);
+}
+
+function isVfx(o) {
+  // Un maillage skinné est rangé à la racine : il appartient à l'effet si ses os y sont
+  if (o.isSkinnedMesh && o.skeleton?.bones.some(b => isVfx(b))) return true;
+  for (; o; o = o.parent) if (o.name.startsWith('VFX_')) return true;
+  return false;
 }
 
 function showModel(gltf) {
@@ -727,6 +747,7 @@ function showModel(gltf) {
   }
   if (skeletonHelper) { scene.remove(skeletonHelper); skeletonHelper = null; }
   mixer?.stopAllAction(); mixer = null; emoteAction = null;
+  vfx?.dispose(); vfx = null; lastTime = 0;
   model = gltf.scene;
   followBone = null; followLast = null;
   if (gltf.animations?.length) {
@@ -743,7 +764,7 @@ function showModel(gltf) {
     o.castShadow = true;
     o.frustumCulled = false; // les emotes déplacent le maillage hors de sa boîte d'origine
     tris += (o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count) / 3;
-    [].concat(o.material).forEach(m => { mats.add(m); m.wireframe = view.wire; });
+    [].concat(o.material).forEach(m => { mats.add(m); m.wireframe = view.wire; vfxBlend(m); });
     o.skeleton?.bones.forEach(b => bones.add(b));
   });
   scene.add(model);
@@ -752,6 +773,25 @@ function showModel(gltf) {
   scene.add(skeletonHelper);
   if (first) frame(model);
   $('stats').textContent = `${Math.round(tris).toLocaleString('fr')} triangles · ${mats.size} matériaux · ${bones.size} os`;
+}
+
+// Matériaux des effets : glTF ne connaît pas le mélange additif, il est marqué par le nom (« ADD_ », « BLEND_ »)
+function vfxBlend(m) {
+  if (/^ADD_/.test(m.name)) Object.assign(m, { blending: THREE.AdditiveBlending, transparent: true, depthWrite: false });
+  else if (/^BLEND_/.test(m.name)) Object.assign(m, { transparent: true, depthWrite: false });
+  else return;
+  m.needsUpdate = true;
+}
+
+// Particules de l'emote, chargées après le modèle
+async function loadVfx(forModel, body, signal) {
+  try {
+    const res = await fetch('api/vfx', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (model !== forModel || !data.emitters?.length) return;
+    vfx = new VfxPlayer(scene, model, data);
+  } catch { /* aperçu sans particules */ }
 }
 
 let pending = null, requestTimer = null, lastGlb = null;
@@ -782,7 +822,10 @@ async function loadModel() {
     if (ctrl !== pending) return;
     lastGlb = buf;
     const gltf = await loader.parseAsync(buf, '');
-    if (ctrl === pending) showModel(gltf);
+    if (ctrl === pending) {
+      showModel(gltf);
+      if (state.emote && gltf.animations?.length) loadVfx(model, JSON.stringify(look()), ctrl.signal);
+    }
   } catch (err) {
     if (err.name !== 'AbortError') toast('Aperçu impossible : ' + err.message, true);
   } finally {

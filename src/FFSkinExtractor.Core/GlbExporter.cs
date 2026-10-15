@@ -19,6 +19,9 @@ public sealed record ExportOptions
 
     /// <summary>Emote jouée par le squelette (piste d'animation du GLB), ou null.</summary>
     public Animation.EmoteClip? Emote { get; init; }
+
+    /// <summary>Effet de l'emote (objets animés ; les particules sont jouées par l'aperçu), ou null.</summary>
+    public Animation.EmoteVfx? Vfx { get; init; }
 }
 
 /// <summary>Exporte une tenue en GLB : maillages, textures, normales lissées et squelette.</summary>
@@ -77,6 +80,7 @@ public static class GlbExporter
         }
         if (rig != null && parts.Count == 0) scene.AddNode(rig.Root);
         if (rig != null && options.Emote is { } emote) Animate(rig, emote);
+        if (options.Vfx is { } vfx) AddVfx(scene, rig, vfx, options.Emote?.Name ?? vfx.Name);
         return scene;
     }
 
@@ -104,6 +108,136 @@ public static class GlbExporter
                 foreach (var (time, sc) in t.Scales) curve.SetPoint(time, sc);
             }
         }
+    }
+
+    /// <summary>Nom du nœud d'un objet d'effet dans le GLB (unique : l'aperçu y accroche les particules).</summary>
+    public static string VfxNodeName(int index, string name) => $"vfx{index:D3}_{name}";
+
+    static Vector3 Mirror(Vector3 p) => new(-p.X, p.Y, p.Z);
+    static Quaternion Mirror(Quaternion q) => new(q.X, -q.Y, -q.Z, q.W);
+    static readonly Matrix4x4 MirrorX = Matrix4x4.CreateScale(-1, 1, 1);
+
+    /// <summary>
+    /// Ajoute l'effet d'une emote : hiérarchie d'objets (en unités du jeu, sous un nœud à l'échelle d'export),
+    /// maillages, et animations ; un objet caché est mis à l'échelle zéro.
+    /// </summary>
+    static void AddVfx(SceneBuilder scene, RigBuilder? rig, Animation.EmoteVfx vfx, string track)
+    {
+        var root = new NodeBuilder("VFX_" + vfx.Name);
+        root.LocalTransform = new SharpGLTF.Transforms.AffineTransform(new Vector3(Uma.UmaMeshDecoder.ExportScale), Quaternion.Identity, Vector3.Zero);
+        var joints = rig?.Joints.GroupBy(j => j.Name).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        var nodes = new NodeBuilder[vfx.Nodes.Count];
+        float end = vfx.Nodes.Select(n => Math.Max(n.Track?.Positions.LastOrDefault().Time ?? 0, Math.Max(n.Track?.Rotations.LastOrDefault().Time ?? 0,
+            n.ActiveKeys?.LastOrDefault().Time ?? 0))).DefaultIfEmpty(0).Max();
+        for (int i = 0; i < vfx.Nodes.Count; i++)
+        {
+            var n = vfx.Nodes[i];
+            NodeBuilder parent = n.Parent >= 0 ? nodes[n.Parent] : root;
+            // Objet accroché à un os du personnage (« Head », « RightHand ») : il suit l'animation de l'os
+            if (n.AttachBone is { } bone && !bone.Equals("Root", StringComparison.OrdinalIgnoreCase) && joints != null
+                && (joints.GetValueOrDefault("bone_" + bone) ?? joints.GetValueOrDefault(bone)) is { } joint)
+            {
+                var holder = joint.CreateNode("VFX_" + bone);
+                holder.LocalTransform = new SharpGLTF.Transforms.AffineTransform(new Vector3(Uma.UmaMeshDecoder.ExportScale), Quaternion.Identity, Vector3.Zero);
+                parent = holder;
+            }
+            var node = nodes[i] = parent.CreateNode(VfxNodeName(i, n.Name));
+            node.LocalTransform = new SharpGLTF.Transforms.AffineTransform(n.Scale, Mirror(n.Rotation), Mirror(n.Position));
+            if (n.Track is { } t)
+            {
+                if (t.Positions.Count > 0) { var c = node.UseTranslation(track); foreach (var (time, p) in t.Positions) c.SetPoint(time, Mirror(p)); }
+                if (t.Rotations.Count > 0) { var c = node.UseRotation(track); foreach (var (time, q) in t.Rotations) c.SetPoint(time, Mirror(q)); }
+            }
+            // Visibilité : l'objet actif ou non (et son rendu activé ou non), par l'échelle
+            bool Visible(float time)
+            {
+                bool active = n.ActiveKeys is { Count: > 0 } k ? k.LastOrDefault(x => x.Time <= time + 1e-4f, k[0]).Active : n.Active;
+                if (n.EnabledKeys is { Count: > 0 } e) active &= e.LastOrDefault(x => x.Time <= time + 1e-4f, e[0]).Active;
+                else if (!n.RendererEnabled) active = false;
+                return active;
+            }
+            bool animatedScale = n.Track?.Scales.Count > 0, toggles = n.ActiveKeys != null || n.EnabledKeys != null;
+            if (animatedScale || toggles || !Visible(0))
+            {
+                var c = node.UseScale(track);
+                var times = (animatedScale ? n.Track!.Scales.Select(x => x.Time) : Enumerable.Empty<float>())
+                    .Concat(n.ActiveKeys?.Select(x => x.Time) ?? []).Concat(n.EnabledKeys?.Select(x => x.Time) ?? [])
+                    .Append(0f).Append(end).Distinct().Order().ToList();
+                foreach (float time in times)
+                {
+                    var sc = animatedScale ? n.Track!.Scales.LastOrDefault(x => x.Time <= time + 1e-4f, n.Track.Scales[0]).Value : n.Scale;
+                    c.SetPoint(time, Visible(time) ? sc : Vector3.Zero, false);
+                }
+            }
+        }
+        scene.AddNode(root);
+
+        var materials = new Dictionary<Animation.VfxMaterial, MaterialBuilder>();
+        foreach (var m in vfx.Meshes)
+        {
+            var src = m.Mesh;
+            var pos = src.Positions.Select(Mirror).ToArray();
+            var nrm = src.Normals?.Select(Mirror).ToArray();
+            bool skinned = m.Bones != null && src.Skin != null && src.BindPoses.Length > 0;
+            for (int s = 0; s < src.Submeshes.Count; s++)
+            {
+                var tri = src.Submeshes[s];
+                if (tri.Length < 3) continue;
+                var mat = m.Materials.ElementAtOrDefault(Math.Min(s, m.Materials.Length - 1));
+                var material = VfxMaterialFor(mat, materials);
+                var tile = mat?.Tiling ?? Vector2.One;
+                var off = mat?.Offset ?? Vector2.Zero;
+                Vector2 Uv(int i) => src.UVs is { } uv ? new Vector2(uv[i].X * tile.X + off.X, 1 - (uv[i].Y * tile.Y + off.Y)) : Vector2.Zero;
+                Vector4 Col(int i) => src.Colors?[i] ?? Vector4.One;
+                if (skinned)
+                {
+                    var mesh = new MeshBuilder<VertexPositionNormal, VertexColor1Texture1, VertexJoints4>(src.Name);
+                    var prim = mesh.UsePrimitive(material);
+                    VertexBuilder<VertexPositionNormal, VertexColor1Texture1, VertexJoints4> V(int i)
+                    {
+                        var (bi, bw) = src.Skin![i];
+                        var pairs = Enumerable.Range(0, 4).Where(k => bw[k] > 0 && bi[k] < src.BindPoses.Length).Select(k => (bi[k], bw[k])).ToArray();
+                        if (pairs.Length == 0) pairs = [(0, 1f)];
+                        return new(new VertexPositionNormal(pos[i], nrm?[i] ?? Vector3.UnitY), new VertexColor1Texture1(Col(i), Uv(i)), new VertexJoints4(pairs));
+                    }
+                    for (int i = 0; i + 2 < tri.Length; i += 3) prim.AddTriangle(V(tri[i]), V(tri[i + 2]), V(tri[i + 1]));
+                    var jointList = src.BindPoses.Select((b, k) =>
+                    {
+                        int nodeIndex = m.Bones!.ElementAtOrDefault(k);
+                        var jn = nodeIndex >= 0 && nodeIndex < nodes.Length && m.Bones.Length > k ? nodes[nodeIndex] : nodes[m.Node];
+                        return (jn, MirrorX * b * MirrorX);
+                    }).ToArray();
+                    scene.AddSkinnedMesh(mesh, jointList);
+                }
+                else
+                {
+                    var mesh = new MeshBuilder<VertexPositionNormal, VertexColor1Texture1, VertexEmpty>(src.Name);
+                    var prim = mesh.UsePrimitive(material);
+                    VertexBuilder<VertexPositionNormal, VertexColor1Texture1, VertexEmpty> V(int i) =>
+                        new(new VertexPositionNormal(pos[i], nrm?[i] ?? Vector3.UnitY), new VertexColor1Texture1(Col(i), Uv(i)));
+                    for (int i = 0; i + 2 < tri.Length; i += 3) prim.AddTriangle(V(tri[i]), V(tri[i + 2]), V(tri[i + 1]));
+                    scene.AddRigidMesh(mesh, nodes[m.Node]);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Matériau d'un objet d'effet. Le nom commence par le mode de mélange (« ADD_ », « BLEND_ ») :
+    /// glTF ne connaît pas le mélange additif, l'aperçu le rétablit.
+    /// </summary>
+    static MaterialBuilder VfxMaterialFor(Animation.VfxMaterial? m, Dictionary<Animation.VfxMaterial, MaterialBuilder> cache)
+    {
+        if (m == null) return new MaterialBuilder("VFX").WithDoubleSide(true).WithBaseColor(new Vector4(0.8f, 0.8f, 0.8f, 1));
+        if (cache.TryGetValue(m, out var mat)) return mat;
+        string prefix = m.Blend switch { Animation.VfxBlend.Additive => "ADD_", Animation.VfxBlend.Alpha => "BLEND_", Animation.VfxBlend.Cutout => "CUT_", _ => "" };
+        mat = new MaterialBuilder(prefix + m.Name).WithDoubleSide(true);
+        if (m.Blend is Animation.VfxBlend.Additive or Animation.VfxBlend.Alpha) mat.WithUnlitShader(); else mat.WithMetallicRoughnessShader().WithMetallicRoughness(0, 0.8f);
+        var color = Vector4.Clamp(m.Color, Vector4.Zero, Vector4.One);
+        if (m.Texture != null) mat.WithBaseColor(Image(m.Texture), color); else mat.WithBaseColor(color);
+        if (m.Blend is Animation.VfxBlend.Additive or Animation.VfxBlend.Alpha) mat.WithAlpha(AlphaMode.BLEND);
+        else if (m.Blend == Animation.VfxBlend.Cutout) mat.WithAlpha(AlphaMode.MASK, 0.5f);
+        return cache[m] = mat;
     }
 
     // Repère habituel des maillages : Z vers le haut dans les données, déjà converti par le décodeur
