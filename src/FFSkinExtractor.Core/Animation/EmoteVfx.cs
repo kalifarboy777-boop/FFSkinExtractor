@@ -68,25 +68,44 @@ public static class EmoteVfxReader
         if (clipTokens.Count == 0) return null;
         // Racines de la scène : transforms sans parent dont l'objet s'appelle « FF_VFX… »
         (AssetTypeValueField Transform, string Name, int Score)? best = null;
-        foreach (var info in bundle.OfType(AssetClassID.Transform))
+        foreach (var (pathId, name) in Roots(bundle))
         {
-            AssetTypeValueField t;
-            try { t = bundle.BaseField(info); } catch (Exception) { continue; }
-            if (t["m_Father"]["m_PathID"].AsLong != 0) continue;
-            string name = ObjectName(bundle, t["m_GameObject"]);
-            if (!name.StartsWith("FF_VFX", StringComparison.OrdinalIgnoreCase)) continue;
             var tokens = Tokens(name, VfxNoise);
             if (tokens.Count == 0 || !tokens.All(clipTokens.Contains)) continue;
             string? g = EmoteReader.GenderOf(name);
             int score = tokens.Count * 10 - (g != null && g != gender ? 50 : 0)
                 - (name.Contains("lobby", StringComparison.OrdinalIgnoreCase) ? 3 : 0)
                 - (name.Contains("mvp", StringComparison.OrdinalIgnoreCase) ? 4 : 0) - name.Length / 20;
-            if (best == null || score > best.Value.Score) best = (t, name, score);
+            if (best == null || score > best.Value.Score) best = (bundle.BaseField(bundle.GetInfo(pathId)!), name, score);
         }
         if (best is not { } root) return null;
         var vfx = new EmoteVfx { Name = root.Name };
         new Builder(bundle, vfx, resolve).Walk(root.Transform, -1);
         return vfx;
+    }
+
+    // Racines « FF_VFX… » de chaque bundle (un bundle d'emotes en contient des dizaines : lues une fois)
+    static readonly Dictionary<(string, DateTime), List<(long PathId, string Name)>> _roots = [];
+
+    /// <summary>Lit à l'avance la liste des effets d'un bundle (la première emote choisie s'affiche plus vite).</summary>
+    public static void Preload(GameBundle bundle) => Roots(bundle);
+
+    static List<(long PathId, string Name)> Roots(GameBundle bundle)
+    {
+        var key = (bundle.Path, File.Exists(bundle.Path) ? File.GetLastWriteTimeUtc(bundle.Path) : default);
+        lock (_roots)
+            if (_roots.TryGetValue(key, out var cached)) return cached;
+        var roots = new List<(long, string)>();
+        foreach (var info in bundle.OfType(AssetClassID.Transform))
+        {
+            AssetTypeValueField t;
+            try { t = bundle.BaseField(info); } catch (Exception) { continue; }
+            if (t["m_Father"]["m_PathID"].AsLong != 0) continue;
+            string name = ObjectName(bundle, t["m_GameObject"]);
+            if (name.StartsWith("FF_VFX", StringComparison.OrdinalIgnoreCase)) roots.Add((info.PathId, name));
+        }
+        lock (_roots) _roots[key] = roots;
+        return roots;
     }
 
     static string ObjectName(GameBundle bundle, AssetTypeValueField pptr)
@@ -101,6 +120,7 @@ public static class EmoteVfxReader
         readonly List<(int Node, AssetTypeValueField Animator)> _animators = [];
         readonly Dictionary<long, VfxMaterial?> _materials = [];
         readonly Dictionary<(int, long), DecodedTexture?> _textures = [];
+        static readonly Dictionary<(string, long), DecodedTexture?> _shared = [];
         readonly Dictionary<long, UnityMesh?> _meshes = [];
         readonly List<(int Node, AssetTypeValueField Renderer, bool Skinned, AssetTypeValueField? Filter)> _renderers = [];
 
@@ -377,10 +397,19 @@ public static class EmoteVfxReader
             DecodedTexture? texture = null;
             try
             {
-                // Texture rangée dans un bundle commun aux effets
-                var source = file == 0 ? bundle : bundle.ExternalCab(file) is { } cab ? resolve?.Invoke(cab) : null;
+                // Texture rangée dans un bundle commun aux effets : décodée une fois pour toutes les emotes
+                string? cab = file == 0 ? null : bundle.ExternalCab(file);
+                var shared = (cab ?? bundle.Path, pathId);
+                lock (_shared)
+                    if (_shared.TryGetValue(shared, out var known)) return _textures[key] = known;
+                var source = file == 0 ? bundle : cab != null ? resolve?.Invoke(cab) : null;
                 if (source?.GetInfo(pathId) is { } info && info.TypeId == (int)AssetClassID.Texture2D)
                     texture = TextureDecoder.Decode(source, info);
+                lock (_shared)
+                {
+                    if (_shared.Count > 400) _shared.Clear();
+                    _shared[shared] = texture;
+                }
             }
             catch (Exception) { /* format de texture non géré */ }
             return _textures[key] = texture;

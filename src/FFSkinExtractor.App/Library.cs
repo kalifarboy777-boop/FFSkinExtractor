@@ -316,6 +316,7 @@ public sealed partial class Library : IDisposable
                 State = again ? LibraryState.Scanning : LibraryState.Ready;
             }
             if (again) _ = Task.Run(() => Scan(settings));
+            else _ = Task.Run(WarmEmotes);
         }
         catch (Exception e)
         {
@@ -1122,6 +1123,49 @@ public sealed partial class Library : IDisposable
         if (_modelCache.Count > 24) _modelCache.Clear();
         _modelCache[key] = glb;
         return glb;
+    }
+
+    readonly Dictionary<(string, string, bool), byte[]> _emoteGlbCache = [];
+
+    /// <summary>
+    /// Emote seule pour l'aperçu, sans la tenue : la page l'applique au modèle déjà affiché. D'abord l'animation
+    /// du squelette (rapide), puis, à part, les effets (<paramref name="effects"/>) sur la même piste.
+    /// </summary>
+    public Task<byte[]?> EmoteGlbAsync(string key, string gender, bool effects) => Task.Run(() =>
+    {
+        lock (_emoteGlbCache)
+            if (_emoteGlbCache.TryGetValue((key, gender, effects), out var cached)) return cached;
+        var emote = EmoteFor(key, gender);
+        if (emote == null) return null;
+        var vfx = effects ? VfxFor(key, gender) : null;
+        if (effects && vfx == null) return null;
+        var glb = GlbExporter.Build(emote.Name, gender, [], new ExportOptions { Skinned = true, Emote = emote, Vfx = vfx, AnimateSkeleton = !effects })
+            .ToGltf2().WriteGLB().ToArray();
+        lock (_emoteGlbCache)
+        {
+            if (_emoteGlbCache.Count > 24) _emoteGlbCache.Clear();
+            _emoteGlbCache[(key, gender, effects)] = glb;
+        }
+        return (byte[]?)glb;
+    });
+
+    /// <summary>
+    /// Après l'analyse, en tâche de fond : index des fichiers partagés et liste des effets de chaque bundle
+    /// d'emotes, pour que la première emote choisie arrive vite.
+    /// </summary>
+    void WarmEmotes()
+    {
+        try
+        {
+            lock (_emoteCache) _cabIndex ??= BuildCabIndex(_allFiles);
+            foreach (var bundle in _emoteClips.Values.Select(v => v.Bundle).Distinct().ToList())
+            {
+                if (State != LibraryState.Ready) return;
+                try { using var b = new GameBundle(bundle); EmoteVfxReader.Preload(b); }
+                catch (Exception) { /* bundle illisible : lu à la demande */ }
+            }
+        }
+        catch (Exception) { /* préchargement facultatif */ }
     }
 
     /// <summary>Textures des pièces choisies, en PNG.</summary>

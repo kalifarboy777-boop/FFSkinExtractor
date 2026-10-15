@@ -3,6 +3,20 @@
 import * as THREE from 'three';
 
 const MAX_PARTICLES = 500;
+
+/**
+ * Mélange additif qui laisse l'opacité du canevas intacte : le fond de l'aperçu est celui de la page (canevas
+ * transparent), un additif ordinaire y rendrait opaques des carrés sombres autour des lueurs.
+ */
+export function makeAdditive(m) {
+  Object.assign(m, {
+    blending: THREE.CustomBlending, blendEquation: THREE.AddEquation,
+    blendSrc: THREE.SrcAlphaFactor, blendDst: THREE.OneFactor,
+    blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor,
+    transparent: true, depthWrite: false,
+  });
+  m.needsUpdate = true;
+}
 const GRAVITY = -9.81;
 
 // Courbe Unity (clés Hermite)
@@ -148,9 +162,10 @@ class Emitter {
         uMap: { value: texture }, uHasMap: { value: !!texture }, uColor: { value: new THREE.Vector4(...c) },
       },
       transparent: true,
-      blending: blend === 'Alpha' || blend === 'Cutout' ? THREE.NormalBlending : THREE.AdditiveBlending,
+      blending: THREE.NormalBlending,
       depthWrite: false, side: THREE.DoubleSide,
     });
+    if (blend !== 'Alpha' && blend !== 'Cutout') makeAdditive(this.material);
     this.mesh = new THREE.Mesh(geo, this.material);
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = 10 + (r.m_SortingFudge ? -Math.sign(r.m_SortingFudge) : 0);

@@ -122,6 +122,13 @@ app.MapPost("/api/model", async (Look look, CancellationToken ct) =>
     catch (Exception e) when (e is not OperationCanceledException) { return Results.Problem(e.Message); }
 });
 
+app.MapPost("/api/emote", async (Look look, bool? effects) =>
+{
+    var (sel, _) = library.Resolve(look);
+    var glb = sel.Emote == null ? null : await library.EmoteGlbAsync(sel.Emote, sel.Gender, effects == true);
+    return glb == null ? Results.NoContent() : Results.File(glb, "model/gltf-binary", "emote.glb");
+});
+
 app.MapPost("/api/vfx", (Look look) =>
 {
     var (sel, _) = library.Resolve(look);

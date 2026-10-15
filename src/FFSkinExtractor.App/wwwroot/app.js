@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { VfxPlayer } from './vfx.js';
+import { VfxPlayer, makeAdditive } from './vfx.js';
 
 // ---------------------------------------------------------------------------
 // Données et état
@@ -687,11 +687,13 @@ new ResizeObserver(resize).observe(canvas.parentElement);
 resize();
 
 const clock = new THREE.Clock();
-let mixer = null, emoteAction = null, vfx = null, lastTime = 0;
+let mixer = null, emoteAction = null, vfxAction = null, vfx = null, lastTime = 0;
 renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
   if (mixer && emoteAction && !emoteAction.paused) {
     mixer.update(dt);
+    // Les objets d'effet suivent le temps de l'emote (leur piste peut être plus courte)
+    if (vfxAction) { vfxAction.time = Math.min(emoteAction.time, vfxAction.getClip().duration); mixer.update(0); }
     follow();
     if (vfx) {
       // L'emote reprend du début : les effets aussi
@@ -746,18 +748,8 @@ function showModel(gltf) {
     model.traverse(o => { o.geometry?.dispose(); [].concat(o.material ?? []).forEach(m => { Object.values(m).forEach(v => v?.isTexture && v.dispose()); m.dispose(); }); });
   }
   if (skeletonHelper) { scene.remove(skeletonHelper); skeletonHelper = null; }
-  mixer?.stopAllAction(); mixer = null; emoteAction = null;
-  vfx?.dispose(); vfx = null; lastTime = 0;
+  clearEmote(false);
   model = gltf.scene;
-  followBone = null; followLast = null;
-  if (gltf.animations?.length) {
-    model.traverse(o => { if (!followBone && o.isBone && /Hips$/i.test(o.name)) followBone = o; });
-    mixer = new THREE.AnimationMixer(model);
-    emoteAction = mixer.clipAction(gltf.animations[0]);
-    emoteAction.play();
-  }
-  $('toolPlay').classList.toggle('hidden', !emoteAction);
-  setPlayIcon();
   let tris = 0, bones = new Set(), mats = new Set();
   model.traverse(o => {
     if (!o.isMesh) return;
@@ -777,24 +769,97 @@ function showModel(gltf) {
 
 // Matériaux des effets : glTF ne connaît pas le mélange additif, il est marqué par le nom (« ADD_ », « BLEND_ »)
 function vfxBlend(m) {
-  if (/^ADD_/.test(m.name)) Object.assign(m, { blending: THREE.AdditiveBlending, transparent: true, depthWrite: false });
+  if (/^ADD_/.test(m.name)) makeAdditive(m);
   else if (/^BLEND_/.test(m.name)) Object.assign(m, { transparent: true, depthWrite: false });
   else return;
   m.needsUpdate = true;
 }
 
-// Particules de l'emote, chargées après le modèle
-async function loadVfx(forModel, body, signal) {
-  try {
-    const res = await fetch('api/vfx', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal });
-    if (!res.ok) return;
-    const data = await res.json();
-    if (model !== forModel || !data.emitters?.length) return;
-    vfx = new VfxPlayer(scene, model, data);
-  } catch { /* aperçu sans particules */ }
+// ---------------------------------------------------------------------------
+// Emote de l'aperçu : chargée à part et appliquée au modèle affiché (le modèle n'est pas reconstruit).
+// D'abord l'animation du squelette, puis les objets d'effet, puis les particules simulées.
+// ---------------------------------------------------------------------------
+let emoteObjects = [], emoteCtrl = null, emoteLoading = false;
+
+function clearEmote(resetPose = true) {
+  emoteCtrl?.abort(); emoteCtrl = null; emoteLoading = false;
+  mixer?.stopAllAction(); mixer = null; emoteAction = null; vfxAction = null;
+  vfx?.dispose(); vfx = null; lastTime = 0;
+  for (const o of emoteObjects) {
+    o.removeFromParent();
+    o.traverse(c => { c.geometry?.dispose(); [].concat(c.material ?? []).forEach(m => { Object.values(m).forEach(v => v?.isTexture && v.dispose()); m.dispose(); }); });
+  }
+  emoteObjects = [];
+  if (resetPose) model?.traverse(o => o.isSkinnedMesh && o.skeleton.pose());
+  followBone = null; followLast = null;
+  $('toolPlay').classList.toggle('hidden', true);
+  setPlayIcon();
 }
 
-let pending = null, requestTimer = null, lastGlb = null;
+const postLook = (url, body, signal) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal });
+
+async function loadEmote() {
+  clearEmote();
+  if (!state.emote || !model) return;
+  const ctrl = emoteCtrl = new AbortController(), forModel = model, body = JSON.stringify(look());
+  const alive = () => ctrl === emoteCtrl && model === forModel;
+  $('loading').classList.remove('hidden');
+  emoteLoading = true;
+  try {
+    const res = await postLook('api/emote', body, ctrl.signal);
+    if (!res.ok || res.status === 204) throw new Error('emote introuvable');
+    const gltf = await loader.parseAsync(await res.arrayBuffer(), '');
+    if (!alive() || !gltf.animations?.length) return;
+    model.traverse(o => { if (!followBone && o.isBone && /Hips$/i.test(o.name)) followBone = o; });
+    mixer = new THREE.AnimationMixer(model);
+    emoteAction = mixer.clipAction(gltf.animations[0]);
+    emoteAction.play();
+    $('toolPlay').classList.remove('hidden');
+    setPlayIcon();
+    emoteLoading = false;
+    $('loading').classList.add('hidden');
+    // Effets : objets animés (et particules cuites, remplacées ici par la simulation)
+    const fx = await postLook('api/emote?effects=true', body, ctrl.signal);
+    if (!fx.ok || fx.status === 204 || !alive()) return;
+    const fxGltf = await loader.parseAsync(await fx.arrayBuffer(), '');
+    if (!alive()) return;
+    graftEffects(fxGltf.scene);
+    if (fxGltf.animations?.length) { vfxAction = mixer.clipAction(fxGltf.animations[0]); vfxAction.play(); }
+    const data = await (await postLook('api/vfx', body, ctrl.signal)).json();
+    if (!alive() || !data.emitters?.length) return;
+    vfx = new VfxPlayer(scene, model, data);
+    await vfx.ready;
+    model.traverse(o => { if (o.name.startsWith('PTC_')) o.visible = false; });
+  } catch (err) {
+    if (err.name !== 'AbortError' && ctrl === emoteCtrl) toast('Emote impossible : ' + err.message, true);
+  } finally {
+    if (ctrl === emoteCtrl) { emoteLoading = false; $('loading').classList.add('hidden'); }
+  }
+}
+
+// Objets d'effet du GLB de l'emote : ceux accrochés à un os passent sur l'os du même nom du modèle, les autres
+// (racine « VFX_… », maillages skinnés sur les os de l'effet) passent dans le modèle ; son squelette est ignoré
+function graftEffects(fxScene) {
+  const holders = [];
+  fxScene.traverse(o => { if (o.name.startsWith('VFX_') && o.parent?.isBone) holders.push(o); });
+  for (const h of holders) {
+    const bone = model.getObjectByName(h.parent.name);
+    if (bone) { bone.add(h); emoteObjects.push(h); }
+  }
+  for (const c of [...fxScene.children]) if (c.name.startsWith('VFX_') || c.isMesh) { model.add(c); emoteObjects.push(c); }
+  for (const o of emoteObjects) o.traverse(m => {
+    if (!m.isMesh) return;
+    m.frustumCulled = false;
+    [].concat(m.material).forEach(mat => { mat.wireframe = view.wire; vfxBlend(mat); });
+  });
+}
+
+// Le modèle ne dépend pas de l'emote : changer d'emote ne le recharge pas
+function modelLook() {
+  return { ...look(), emote: null, skinned: state.options.skinned || !!state.emote };
+}
+
+let pending = null, requestTimer = null, shownLook = null;
 function requestModel() {
   clearTimeout(requestTimer);
   requestTimer = setTimeout(loadModel, 120);
@@ -805,31 +870,35 @@ async function loadModel() {
   const empty = !state.character && Object.keys(state.slots).length === 0;
   $('empty').classList.toggle('hidden', !(empty && !state.status.baseReady));
   if (empty && !state.status.baseReady) {
+    clearEmote(false);
     if (model) { scene.remove(model); model = null; }
+    shownLook = null;
     if (skeletonHelper) { scene.remove(skeletonHelper); skeletonHelper = null; }
     $('stats').textContent = '';
     return;
   }
+  const body = JSON.stringify(modelLook());
+  if (model && body === shownLook && !pending) { loadEmote(); return; }
   pending?.abort();
   const ctrl = pending = new AbortController();
   $('loading').classList.remove('hidden');
   try {
     const res = await fetch('api/model', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(look()), signal: ctrl.signal,
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: ctrl.signal,
     });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? res.statusText);
     const buf = await res.arrayBuffer();
     if (ctrl !== pending) return;
-    lastGlb = buf;
     const gltf = await loader.parseAsync(buf, '');
     if (ctrl === pending) {
       showModel(gltf);
-      if (state.emote && gltf.animations?.length) loadVfx(model, JSON.stringify(look()), ctrl.signal);
+      shownLook = body;
+      loadEmote();
     }
   } catch (err) {
     if (err.name !== 'AbortError') toast('Aperçu impossible : ' + err.message, true);
   } finally {
-    if (ctrl === pending) { $('loading').classList.add('hidden'); pending = null; }
+    if (ctrl === pending) { if (!emoteLoading) $('loading').classList.add('hidden'); pending = null; }
   }
 }
 

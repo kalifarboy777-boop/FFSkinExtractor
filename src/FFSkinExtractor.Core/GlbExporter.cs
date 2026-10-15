@@ -20,7 +20,10 @@ public sealed record ExportOptions
     /// <summary>Emote jouée par le squelette (piste d'animation du GLB), ou null.</summary>
     public Animation.EmoteClip? Emote { get; init; }
 
-    /// <summary>Effet de l'emote (objets animés ; les particules sont jouées par l'aperçu), ou null.</summary>
+    /// <summary>Anime le squelette avec l'emote (faux : l'emote ne sert qu'au nom et à la durée de la piste des effets).</summary>
+    public bool AnimateSkeleton { get; init; } = true;
+
+    /// <summary>Effet de l'emote (objets animés, particules cuites en plans animés), ou null.</summary>
     public Animation.EmoteVfx? Vfx { get; init; }
 }
 
@@ -79,8 +82,8 @@ public static class GlbExporter
             else scene.AddRigidMesh(mesh, Matrix4x4.Identity);
         }
         if (rig != null && parts.Count == 0) scene.AddNode(rig.Root);
-        if (rig != null && options.Emote is { } emote) Animate(rig, emote);
-        if (options.Vfx is { } vfx) AddVfx(scene, rig, vfx, options.Emote?.Name ?? vfx.Name);
+        if (rig != null && options.Emote is { } emote && options.AnimateSkeleton) Animate(rig, emote);
+        if (options.Vfx is { } vfx) AddVfx(scene, rig, vfx, options.Emote?.Name ?? vfx.Name, options.Emote?.Duration ?? 0);
         return scene;
     }
 
@@ -121,7 +124,7 @@ public static class GlbExporter
     /// Ajoute l'effet d'une emote : hiérarchie d'objets (en unités du jeu, sous un nœud à l'échelle d'export),
     /// maillages, et animations ; un objet caché est mis à l'échelle zéro.
     /// </summary>
-    static void AddVfx(SceneBuilder scene, RigBuilder? rig, Animation.EmoteVfx vfx, string track)
+    static void AddVfx(SceneBuilder scene, RigBuilder? rig, Animation.EmoteVfx vfx, string track, float duration)
     {
         var root = new NodeBuilder("VFX_" + vfx.Name);
         root.LocalTransform = new SharpGLTF.Transforms.AffineTransform(new Vector3(Uma.UmaMeshDecoder.ExportScale), Quaternion.Identity, Vector3.Zero);
@@ -149,13 +152,7 @@ public static class GlbExporter
                 if (t.Rotations.Count > 0) { var c = node.UseRotation(track); foreach (var (time, q) in t.Rotations) c.SetPoint(time, Mirror(q)); }
             }
             // Visibilité : l'objet actif ou non (et son rendu activé ou non), par l'échelle
-            bool Visible(float time)
-            {
-                bool active = n.ActiveKeys is { Count: > 0 } k ? k.LastOrDefault(x => x.Time <= time + 1e-4f, k[0]).Active : n.Active;
-                if (n.EnabledKeys is { Count: > 0 } e) active &= e.LastOrDefault(x => x.Time <= time + 1e-4f, e[0]).Active;
-                else if (!n.RendererEnabled) active = false;
-                return active;
-            }
+            bool Visible(float time) => NodeVisible(n, time);
             bool animatedScale = n.Track?.Scales.Count > 0, toggles = n.ActiveKeys != null || n.EnabledKeys != null;
             if (animatedScale || toggles || !Visible(0))
             {
@@ -220,6 +217,114 @@ public static class GlbExporter
                 }
             }
         }
+        AddParticles(scene, vfx, nodes, track, Math.Max(end, duration), materials);
+    }
+
+    static bool Active(Animation.VfxNode n, float time) =>
+        n.ActiveKeys is { Count: > 0 } k ? k.LastOrDefault(x => x.Time <= time + 1e-4f, k[0]).Active : n.Active;
+
+    // Objet affiché à cet instant : actif, et son rendu activé
+    static bool NodeVisible(Animation.VfxNode n, float time)
+    {
+        bool active = Active(n, time);
+        if (n.EnabledKeys is { Count: > 0 } e) active &= e.LastOrDefault(x => x.Time <= time + 1e-4f, e[0]).Active;
+        else if (!n.RendererEnabled) active = false;
+        return active;
+    }
+
+    /// <summary>
+    /// Particules cuites : chaque particule devient un plan (ou le maillage de l'émetteur) enfant de son émetteur,
+    /// animé en position, rotation et taille, et réduit à zéro hors de sa vie. Les plans font face à l'avant (+Z).
+    /// </summary>
+    static void AddParticles(SceneBuilder scene, Animation.EmoteVfx vfx, NodeBuilder[] nodes, string track, float end, Dictionary<Animation.VfxMaterial, MaterialBuilder> materials)
+    {
+        bool Visible(int node, float time)
+        {
+            if (!NodeVisible(vfx.Nodes[node], time)) return false;
+            for (int p = vfx.Nodes[node].Parent; p >= 0; p = vfx.Nodes[p].Parent)
+                if (!Active(vfx.Nodes[p], time) || vfx.Nodes[p].Track?.Scales is { Count: > 0 } sc && sc.LastOrDefault(x => x.Time <= time + 1e-4f, sc[0]).Value.X == 0) return false;
+            return true;
+        }
+        var particles = Animation.ParticleBaker.Bake(vfx, end, Visible);
+        var meshes = new Dictionary<int, IMeshBuilder<MaterialBuilder>>();
+        int count = 0;
+        foreach (var group in particles.GroupBy(p => p.Emitter))
+        {
+            var e = vfx.Emitters[group.Key];
+            int mode = e.Renderer["m_RenderMode"]?.GetValue<long>() is long m ? (int)m : 0;
+            bool meshMode = mode == 4 && e.Mesh != null;
+            var color = Vector4.Clamp(group.Aggregate(Vector4.Zero, (a, p) => a + p.Color) / group.Count(), Vector4.Zero, Vector4.One);
+            // Particule sans mélange reconnu : additive, comme le shader de particules par défaut du jeu
+            var material = e.Material is { Blend: Animation.VfxBlend.Opaque } opaque ? opaque with { Blend = Animation.VfxBlend.Additive } : e.Material;
+            var mesh = ParticleMesh(e, meshMode, color, group.First().UvRect, VfxMaterialFor(material, materials));
+            // Orientation fixe des parents (sans leur animation) : les plans font face à l'avant du monde
+            var parentRot = Quaternion.Identity;
+            for (int n = e.Node; n >= 0; n = vfx.Nodes[n].Parent)
+            {
+                parentRot = vfx.Nodes[n].Rotation * parentRot;
+                if (vfx.Nodes[n].AttachBone != null) break;
+            }
+            var facing = Quaternion.Inverse(parentRot) * (mode == 2 ? Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI / 2) : Quaternion.Identity);
+            foreach (var p in group)
+            {
+                if (p.Keys.Count == 0) continue;
+                var node = nodes[e.Node].CreateNode($"PTC_{group.Key:D3}_{count++}");
+                node.LocalTransform = new SharpGLTF.Transforms.AffineTransform(Vector3.Zero, Quaternion.Identity, Mirror(p.Keys[0].Position));
+                Quaternion Rot(float r) => meshMode
+                    ? Quaternion.CreateFromAxisAngle(Vector3.UnitZ, r)
+                    : facing * Quaternion.CreateFromAxisAngle(Vector3.UnitZ, r);
+                var tc = node.UseTranslation(track);
+                var sc = node.UseScale(track);
+                bool rotates = p.Keys.Any(k => MathF.Abs(k.Rotation - p.Keys[0].Rotation) > 1e-3f);
+                var rc = rotates ? node.UseRotation(track) : null;
+                if (!rotates) node.LocalTransform = new SharpGLTF.Transforms.AffineTransform(Vector3.Zero, Mirror(Rot(p.Keys[0].Rotation)), Mirror(p.Keys[0].Position));
+                float birth = p.Keys[0].Time;
+                if (birth > 0) { sc.SetPoint(0, Vector3.Zero); sc.SetPoint(Math.Max(birth - 0.001f, 0), Vector3.Zero); }
+                foreach (var (time, pos, size, rot) in p.Keys)
+                {
+                    tc.SetPoint(time, Mirror(pos));
+                    sc.SetPoint(time, meshMode ? size : new Vector3(size.X, size.Y, 1));
+                    rc?.SetPoint(time, Mirror(Rot(rot)));
+                }
+                float death = Math.Max(p.Death, p.Keys[^1].Time + 0.001f);
+                sc.SetPoint(death, Vector3.Zero);
+                sc.SetPoint(Math.Max(end, death), Vector3.Zero);
+                scene.AddRigidMesh(mesh, node);
+            }
+        }
+    }
+
+    // Plan d'une particule (dans le repère Unity : X inversé ensuite), ou maillage de l'émetteur
+    static IMeshBuilder<MaterialBuilder> ParticleMesh(Animation.VfxEmitter e, bool meshMode, Vector4 color, Vector4 rect, MaterialBuilder material)
+    {
+        var mesh = new MeshBuilder<VertexPositionNormal, VertexColor1Texture1, VertexEmpty>("Particles_" + (e.Material?.Name ?? "VFX"));
+        var prim = mesh.UsePrimitive(material);
+        var tile = e.Material?.Tiling ?? Vector2.One;
+        var off = e.Material?.Offset ?? Vector2.Zero;
+        Vector2 Uv(Vector2 uv) => new(uv.X * tile.X + off.X, 1 - (uv.Y * tile.Y + off.Y));
+        VertexBuilder<VertexPositionNormal, VertexColor1Texture1, VertexEmpty> V(Vector3 p, Vector2 uv) =>
+            new(new VertexPositionNormal(Mirror(p), Vector3.UnitZ), new VertexColor1Texture1(color, Uv(uv)));
+        if (meshMode)
+        {
+            var src = e.Mesh!;
+            foreach (var tri in src.Submeshes)
+                for (int i = 0; i + 2 < tri.Length; i += 3)
+                {
+                    Vector2 U(int k) => src.UVs?[k] ?? Vector2.Zero;
+                    prim.AddTriangle(V(src.Positions[tri[i]], U(tri[i])), V(src.Positions[tri[i + 2]], U(tri[i + 2])), V(src.Positions[tri[i + 1]], U(tri[i + 1])));
+                }
+        }
+        else
+        {
+            Vector2 Corner(float x, float y) => new(rect.X + (x + 0.5f) * rect.Z, rect.Y + (y + 0.5f) * rect.W);
+            var a = V(new(-0.5f, -0.5f, 0), Corner(-0.5f, -0.5f));
+            var b = V(new(0.5f, -0.5f, 0), Corner(0.5f, -0.5f));
+            var c = V(new(0.5f, 0.5f, 0), Corner(0.5f, 0.5f));
+            var d = V(new(-0.5f, 0.5f, 0), Corner(-0.5f, 0.5f));
+            prim.AddTriangle(a, c, b);
+            prim.AddTriangle(a, d, c);
+        }
+        return mesh;
     }
 
     /// <summary>

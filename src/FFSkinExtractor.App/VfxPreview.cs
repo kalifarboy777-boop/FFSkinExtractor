@@ -29,6 +29,7 @@ public static class VfxPreview
                     ["renderer"] = e.Renderer.DeepClone(),
                     ["material"] = m == null ? null : new JsonObject
                     {
+                        ["name"] = m.Name,
                         ["blend"] = m.Blend.ToString(),
                         ["color"] = Array(m.Color.X, m.Color.Y, m.Color.Z, m.Color.W),
                         ["texture"] = texture,
