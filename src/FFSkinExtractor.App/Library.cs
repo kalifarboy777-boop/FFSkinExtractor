@@ -112,6 +112,8 @@ public sealed partial class Library : IDisposable
     List<HeadLayerRef> _headLayers = [];
     // Overlays de tous les bundles, par clé de rapprochement : un slot peut prendre ses textures dans un autre bundle
     Dictionary<string, (string Bundle, string Overlay)> _overlayIndex = [];
+    // Bundle de chaque overlay, par son nom exact (peau propre à un personnage : « Male_Body_Sc_Thaiboxer_Overlay_N »)
+    Dictionary<string, string> _overlayBundle = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, TextureSet?> _externalOverlays = [];
     readonly Dictionary<(HeadLayerKind, string, string), List<HeadLayer>> _layerCache = [];
     Dictionary<long, List<(string Gender, string Name)>> _facePaintIndex = [];
@@ -237,6 +239,7 @@ public sealed partial class Library : IDisposable
             var cabs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var layers = new List<HeadLayerRef>();
             var overlayIndex = new Dictionary<string, (string, string)>();
+            var overlayBundle = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             for (int i = 0; i < bundles.Count; i++)
             {
                 if (results[i] is not { } r) continue;
@@ -245,7 +248,11 @@ public sealed partial class Library : IDisposable
                     if (!IsAccessoryOnly(o.Name)) entries.Add(Describe(o, label, bundles[i]));
                 if (r.Cab != null) cabs.TryAdd(r.Cab, bundles[i]);
                 layers.AddRange(r.Layers.Select(l => new HeadLayerRef(l.Gender, l.Kind, l.Name, bundles[i], l.Overlay, l.Atlas)));
-                foreach (var (key, overlay) in r.Overlays) overlayIndex.TryAdd(key, (bundles[i], overlay));
+                foreach (var (key, overlay) in r.Overlays)
+                {
+                    overlayIndex.TryAdd(key, (bundles[i], overlay));
+                    overlayBundle.TryAdd(overlay, bundles[i]);
+                }
             }
             // Recettes du jeu : objets qui reprennent le maillage d'une tenue avec les textures d'une autre
             Message = "Lecture des recettes du jeu…";
@@ -286,6 +293,7 @@ public sealed partial class Library : IDisposable
             lock (_layerCache) _layerCache.Clear();
             _headLayers = layers;
             _overlayIndex = overlayIndex;
+            _overlayBundle = overlayBundle;
             lock (_externalOverlays) _externalOverlays.Clear();
             _entryById = entries.GroupBy(e => e.Id).ToDictionary(g => g.Key, g => g.First());
             Outfits = Merge(entries).OrderBy(e => e.Gender).ThenBy(e => e.DisplayName, StringComparer.OrdinalIgnoreCase).ToList();
@@ -1227,6 +1235,10 @@ public sealed partial class Library : IDisposable
                 if (suit != null) baseParts = baseParts.Where(p => p.Piece is not ("Top" or "Bottom" or "Shoe")).ToList();
                 parts = BaseCharacter.Compose(baseParts, chosen);
             }
+            // Peau propre au personnage (tatouages de Kla…) : elle remplace celle du corps de base sur tous les morceaux de peau
+            if (sel.Character != null && CharacterSkin(sel) is { } own)
+                // seule sa couleur est reprise : ses cartes de relief, plus petites, donnent un grain qui n'existe pas en jeu
+                parts = parts.Select(p => p.IsSkin ? p with { TextureSource = new Lazy<TextureSet>(p.Textures with { BaseColor = own.BaseColor }) } : p).ToList();
             parts = HeadPaint.Apply(parts, FaceLayersFor(sel, data));
             return use(DefaultName(sel), parts);
         }
@@ -1236,6 +1248,17 @@ public sealed partial class Library : IDisposable
     /// <summary>Sélection qui reprend toutes les pièces d'une tenue.</summary>
     public static Selection Full(OutfitEntry o, bool withBase = true, bool skinned = true, bool pbr = true) =>
         new(o.Gender, o.HighDetail, o.Pieces.ToDictionary(p => p.Piece, p => o.SourceOf(p.Piece)), withBase, skinned, pbr);
+
+    // « Male_Body_Sc_Thaiboxer_Overlay_N » (ou sans « _N »), d'après le personnage choisi
+    TextureSet? CharacterSkin(Selection sel)
+    {
+        foreach (string suffix in sel.HighDetail ? new[] { "_N", "" } : ["", "_N"])
+        {
+            string name = $"{sel.Gender}_Body_{sel.Character}_Overlay{suffix}";
+            if (_overlayBundle.TryGetValue(name, out var bundle) && LoadOverlay(bundle, name) is { BaseColor: not null } set) return set;
+        }
+        return null;
+    }
 
     SkinTextures Skin(GameData data, bool hd)
     {
